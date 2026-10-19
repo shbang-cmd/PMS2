@@ -1,3 +1,4 @@
+# PMS2 v0.6.35: board total P&L; Monte Carlo multicolor paths.
 # PMS2 v0.6.18: add in-cell allocation data bars to board portfolio-weight column.
 # PMS2 v0.6.15: unified header totals and remove duplicate auto-status.
 # PMS2 v0.6.14: header portfolio NAV and prior-close changes from board valuation rows.
@@ -22,7 +23,7 @@
 # PMS2 v0.5.82 (2026-10-18): 보고서 생성 중 즉시 표시 스피너 및 완료/오류 자동 종료.
 # PMS2 v0.5.81 (2026-10-18): PDF XeLaTeX/Malgun Gothic Korean font and report number formatting fix.
 # ============================================================
-# PMS2 - 개인금융자산 통계연구소
+# PMS2 - 내주식 통계연구소
 # Version : v0.5.88
 # Date    : 2026-10-18
 # 변경사항:
@@ -702,7 +703,8 @@ ui <- fluidPage(
     tags$button(id='pms_dark_toggle',type='button',class='btn btn-default',style='margin-left:12px;',onclick='window.pmsSetDarkMode(!document.body.classList.contains(\"pms-dark\"))','☾ 다크모드')
   ),
   tags$div(id='pms_zoom_content',
-  titlePanel('PMS2 | 개인금융자산 통계연구소'),
+  titlePanel('PMS2 | 내주식 통계연구소', windowTitle='PMS2 | 내주식 통계연구소'),
+  tags$p(style='color:#68798a;font-size:13px;margin:-7px 0 14px 2px;', '나만의 투자자산 분석·위험관리 시스템'),
   tags$head(tags$script(HTML("
     (function(){
       function registerFetchClock(){
@@ -727,6 +729,14 @@ ui <- fluidPage(
       border-color:#4f657c!important;}
     body.pms-dark .pms-board-header h3,body.pms-dark .pms-board-header span {color:#f3f7ff!important;}
     #pms_board_last_fetch_text {font-size:13px;font-weight:650;}
+    .pms-board-header .pms-move-up, body.pms-dark .pms-board-header .pms-move-up {color:#d43838!important;}
+    .pms-board-header .pms-move-down, body.pms-dark .pms-board-header .pms-move-down {color:#267dc5!important;}
+    .pms-board-header .pms-move-flat, body.pms-dark .pms-board-header .pms-move-flat {color:#667788!important;}
+    .pms-price-roll {display:inline-block;overflow:hidden;vertical-align:middle;line-height:1.35;}
+    .pms-price-roll-track {display:flex;flex-direction:column;white-space:nowrap;animation:pms-price-roll-up .65s cubic-bezier(.2,.75,.25,1) both;}
+    .pms-price-roll-track > span {display:block;line-height:1.35;}
+    @keyframes pms-price-roll-up {from {transform:translateY(0);} to {transform:translateY(-50%);}}
+    @media (prefers-reduced-motion:reduce) {.pms-price-roll-track {animation:none;transform:translateY(-50%);}}
   "))),
   tabsetPanel(id='pms_tabs', type='tabs',
   tabPanel('홈',
@@ -776,14 +786,34 @@ ui <- fluidPage(
     actionButton('snapshot_save_now','현재 자료로 오늘 스냅샷 저장',class='btn-primary'),
     tags$div(style='margin:10px 0;',textOutput('snapshot_save_status')),
     tags$p('저장 위치: data/pms.sqlite + snapshots/YYYY-MM-DD.csv · 같은 날짜의 CSV는 덮어써서 1개만 유지합니다.'),
-    DTOutput('snapshot_history_table')
+    DTOutput('snapshot_history_table'),
+    tags$hr(),
+    h4('종목별 평가액 비중 트리맵'),
+    tags$p(class='text-muted','현재 SQLite에 저장된 보유종목·마지막 시세 기준입니다. 과거 날짜별 보유종목 구성은 표시하지 않습니다. 사각형 면적은 종목별 원화 평가액에 비례합니다.'),
+    plotOutput('snapshot_symbol_treemap',height='520px'),
+    h4('자산군별 평가액 비중 트리맵'),
+    tags$p(class='text-muted','위 종목별 트리맵과 동일한 평가액을 자산군(주식·채권·금·현금성·기타) 기준으로 합산합니다.'),
+    plotOutput('snapshot_asset_treemap',height='300px'),
+    textOutput('snapshot_treemap_note')
   ),
   tabPanel('평가액추이',
     h3('평가액·평가손익 시계열 분석'),
     tags$p(class='text-muted','2024-09-17부터 과거 PMS 전체 집계자료와 이후 일별 SQLite 스냅샷을 연결합니다. 과거 자료에는 종목별 상세 내역이 없으며, 실제 입출금이 기록되지 않아 운용수익률(TWR)로 해석할 수 없습니다.'),
     fluidRow(column(4,selectInput('trajectory_period','조회 기간',choices=c('전체 기간'='all','최근 1년'='365','최근 6개월'='180','최근 3개월'='90','최근 1개월'='30'),selected='all')),
              column(8,tags$p(class='text-muted',style='margin-top:30px;',textOutput('trajectory_source_note')))),
-    uiOutput('trajectory_dashboard'),
+    h4('총평가액 · 평가손익 통합 추이 (왼쪽/오른쪽 독립 Y축)'),
+    tags$p(class='text-muted','왼쪽 파란 눈금은 총평가액(억원), 오른쪽 주황 눈금은 평가손익(억원)입니다. 각각 독립된 범위로 표시되므로 선의 높이를 서로 직접 비교하지 마세요.'),
+    plotOutput('trajectory_dual_axis',height='460px'),
+    h4('선형회귀 추세선 · 일평균 기울기'),
+    tags$p(class='text-muted','선택 기간의 관측 날짜를 실제 일수로 변환해 최소제곱 직선을 계산합니다. 기울기는 하루당 원화 변화량이며, 추가 납입·인출의 영향을 포함하므로 투자수익률이 아닙니다.'),
+    fluidRow(
+      column(6,textOutput('trajectory_value_slope')),
+      column(6,textOutput('trajectory_profit_slope'))
+    ),
+    h4('전량 매도 시 추정 세후 평가손익'),
+    fluidRow(column(4,numericInput('trajectory_domestic_tax','국내상장 미국지수 ETF 차익 적용세율 (%)',value=38,min=0,max=100,step=0.5)),
+      column(8,uiOutput('trajectory_aftertax_result'))),
+    tags$p(class='text-muted','시뮬레이션 가정: 국내 상장 미국지수 ETF(tax_type=KR_US_INDEX_ETF)의 양(+)의 평가차익 합계에만 입력 세율을 적용합니다. 그 밖의 일반 국내주식과 국내 보유분은 본 단순 계산에서 세금을 0원으로 가정합니다. 해외 보유분은 양(+)의 평가차익 합계에서 20,000,000원을 차감한 초과분에 22%를 적용합니다. 손실에는 세금을 부과하지 않습니다. 실제 과세는 종목 유형·계좌 유형·거주자 여부·연간 실현손익·공제 규정에 따라 다르므로 신고 예상세액이 아닙니다. 과거 평가액 추이와 별개로 현재 보유분의 저장 시세를 사용합니다.'),
     h4('날짜별 평가 기록'),
     DTOutput('trajectory_table')
   ),
@@ -822,6 +852,9 @@ ui <- fluidPage(
       column(3,numericInput('risk_mc_withdraw','연간 인출액(원)',48000000,min=0,step=1000000)),
       column(1,tags$div(style='margin-top:24px;',actionButton('risk_run_mc','실행',class='btn-primary')))),
     uiOutput('risk_mc_summary'),
+    plotOutput('risk_mc_paths_chart',height='430px'),
+    tags$p(class='text-muted',style='font-size:12px;',
+      '여러 색의 얇은 선은 시뮬레이션에서 일부 경로를 추출한 예시이며, 굵은 선은 표시 경로의 중앙값입니다. 실제 수익률 예측이나 보장 범위가 아닙니다.'),
     h4('상세 위험 통계'),DTOutput('risk_stats_table'),
     tags$div(class='alert alert-info',style='margin-top:16px;',
       tags$b('선택적 고급 분석: '),'GARCH(1,1)는 rugarch 패키지와 충분한 관측수가, PCA·팩터 회귀·과거 위기 리플레이는 별도의 자산별 가격·팩터·목표비중 자료가 필요합니다. 현재 기록만으로 결과를 꾸며내지 않으며 별도 연동 전까지는 제외합니다.')
@@ -2374,11 +2407,11 @@ server <- function(input, output, session) {
       if(!is.finite(prior) || prior <= 0) return(tags$span(title,' (전일 자료 없음)'))
       change <- rate-prior
       pct <- change/prior*100
-      col <- if(change > 0) '#d43838' else if(change < 0) '#267dc5' else '#667788'
-      tags$span(style='white-space:nowrap;',
+      cls <- if(change > 0) 'pms-move-up' else if(change < 0) 'pms-move-down' else 'pms-move-flat'
+      tags$span(class=cls,style='white-space:nowrap;',
         tags$b('USD/KRW '),
         sprintf('%s원',format(round(rate,2),big.mark=',',nsmall=2,trim=TRUE)),
-        tags$span(style=paste0('color:',col,';font-weight:750;margin-left:6px;'),
+        tags$span(style='font-weight:750;margin-left:6px;',
           sprintf('%+.2f원 (%+.2f%%)',change,pct)))
     },error=function(e) tags$span('USD/KRW: 확인 필요'))
   }
@@ -2406,11 +2439,21 @@ server <- function(input, output, session) {
         100 * delta / prev_value else NA_real_
       pct_label <- if(is.finite(daily_pct))
         sprintf(' (%+.2f%%)',daily_pct) else ' (등락률 산출 불가)'
-      color <- if(!is.finite(delta)) '#667788' else if(delta > 0) '#d43838' else if(delta < 0) '#267dc5' else '#667788'
+      delta_cls <- if(!is.finite(delta)) 'pms-move-flat' else if(delta > 0) 'pms-move-up' else if(delta < 0) 'pms-move-down' else 'pms-move-flat'
       tags$span(style='display:inline-flex;flex-wrap:wrap;align-items:center;gap:12px;',
         tags$span(tags$b('총평가액 '),val(x$nav)),
-        tags$span(style=paste0('color:',color,';font-weight:750;'),
+        tags$span(class=delta_cls,style='font-weight:750;',
           tags$b('전일대비 '),val(x$change,TRUE),pct_label),
+        local({
+          costs <- pms_board_purchase_profit(pms_board_valuation_changes(board_prices(),con))
+          pnl <- suppressWarnings(as.numeric(costs[['매수금대비손익(원)']]))
+          ok <- length(pnl) > 0L && all(is.finite(pnl))
+          total_pnl <- if(ok) sum(pnl) else NA_real_
+          pnl_cls <- if(!ok || total_pnl == 0) 'pms-move-flat' else if(total_pnl > 0) 'pms-move-up' else 'pms-move-down'
+          tags$span(class=pnl_cls,style='font-weight:750;white-space:nowrap;',
+            tags$b('총평가손익 '),board_amount_text(total_pnl,TRUE),
+            if(!ok) tags$small(style='font-weight:400;',' (취득원가·시세 확인 필요)'))
+        }),
         pms_board_fx_header())
     },error=function(e) {
       tags$span(style='font-size:12px;color:#b35b13;',
@@ -2491,10 +2534,46 @@ server <- function(input, output, session) {
     }")
     numeric_targets <- as.integer(match(formatted_cols,names(z))-1L)
     nav_idx <- match('총평가액(원)',names(z))-1L
+    # Animate only actual price-driven numeric changes; sorting/search redraws are inert.
+    roll_columns <- intersect(c('현재가','등락률(%)','총평가액(원)','평가증감(원)'), names(z))
+    roll_indices <- as.integer(match(roll_columns,names(z))-1L)
+    roll_indices_js <- paste(roll_indices,collapse=',')
+    roll_callback <- DT::JS(paste0("function(settings) {
+      var api = this.api();
+      var tableId = 'pms_board_roll_v627';
+      var state = window[tableId] || (window[tableId] = {values:{},ready:false});
+      var columns = [",roll_indices_js,"];
+      api.rows({page:'current'}).every(function(){
+        var row = this.data(), node = this.node();
+        if(!row || !node) return;
+        var key = String(row[0]) + '|' + String(row[1]);
+        columns.forEach(function(col){
+          var td = node.cells[col];
+          if(!td) return;
+          var value = Number(row[col]);
+          if(!isFinite(value)) return;
+          var k = key + '|' + col;
+          var previous = state.values[k];
+          var label = td.textContent.trim();
+          if(state.ready && previous && isFinite(previous.value) && previous.value !== value){
+            var oldLabel = previous.label;
+            var outer = document.createElement('span'); outer.className='pms-price-roll';
+            var track = document.createElement('span'); track.className='pms-price-roll-track';
+            var a=document.createElement('span'), b=document.createElement('span');
+            a.textContent=oldLabel; b.textContent=label;
+            track.appendChild(a);track.appendChild(b);outer.appendChild(track);
+            td.textContent='';td.appendChild(outer);
+          }
+          state.values[k]={value:value,label:label};
+        });
+      });
+      state.ready=true;
+    }"))
     tab <- DT::datatable(z,rownames=FALSE,
       options=list(pageLength=100,lengthMenu=c(25,50,100,200),scrollX=TRUE,autoWidth=TRUE,
         order=list(list(nav_idx,'desc')),dom='ltip',
-        columnDefs=list(list(targets=numeric_targets,className='dt-right',render=js_renderer))),
+        columnDefs=list(list(targets=numeric_targets,className='dt-right',render=js_renderer)),
+        drawCallback=roll_callback),
       filter='top',escape=TRUE)
     if(nrow(z)) {
       tab <- DT::formatStyle(tab,columns='총평가액(원)',fontWeight='bold')
@@ -2621,6 +2700,71 @@ server <- function(input, output, session) {
     snapshot_refresh()
     x <- pms_snapshot_history(con)
     DT::datatable(x,rownames=FALSE,options=list(pageLength=15,scrollX=TRUE,order=list(list(0,'desc'))))
+  })
+  # v0.6.28: snapshot tab treemaps; read-only (current holdings and saved prices).
+  snapshot_treemap_data <- reactive({
+    snapshot_refresh()
+    refresh()
+    market_refresh()
+    d <- pms_valuation(con,include_zero=FALSE)
+    if(!nrow(d)) return(data.frame())
+    need <- c('symbol','name','asset_class','market_value_krw')
+    if(!all(need %in% names(d))) stop('트리맵에 필요한 평가액 필드가 없습니다: ',paste(setdiff(need,names(d)),collapse=', '))
+    vals <- suppressWarnings(as.numeric(d$market_value_krw))
+    ok <- is.finite(vals) & vals > 0
+    if(!any(ok)) return(data.frame())
+    z <- d[ok,,drop=FALSE]
+    z$value <- vals[ok]
+    z$symbol <- as.character(z$symbol)
+    z$name <- as.character(z$name)
+    z$asset_class <- as.character(z$asset_class)
+    z$symbol[is.na(z$symbol) | !nzchar(z$symbol)] <- '미확인 종목'
+    z$name[is.na(z$name) | !nzchar(z$name)] <- z$symbol[is.na(z$name) | !nzchar(z$name)]
+    z$asset_class[is.na(z$asset_class) | !nzchar(z$asset_class)] <- 'OTHER'
+    z
+  })
+  snapshot_treemap_draw <- function(z,group_col) {
+    if(!requireNamespace('treemap',quietly=TRUE)) {
+      plot.new();text(.5,.5,'트리맵 패키지가 필요합니다: install.packages("treemap")',cex=1.1)
+      return(invisible(NULL))
+    }
+    if(!nrow(z)) {
+      plot.new();text(.5,.5,'표시할 평가 가능 보유종목이 없습니다.',cex=1.1)
+      return(invisible(NULL))
+    }
+    sums <- stats::aggregate(z$value,list(label=z[[group_col]]),sum)
+    names(sums)[2] <- 'value'
+    sums <- sums[is.finite(sums$value) & sums$value>0,,drop=FALSE]
+    total <- sum(sums$value)
+    sums$label <- paste0(sums$label,'  ',sprintf('%.1f%%',100*sums$value/total))
+    treemap::treemap(sums,index='label',vSize='value',type='index',
+      fontsize.labels=if(nrow(sums)>30L) 8 else 12,
+      fontcolor.labels='white',fontface.labels=2,
+      border.col='white',border.lwds=2,inflate.labels=FALSE,
+      bg.labels=0,align.labels=list(c('center','center')),
+      title='',palette='Set3')
+  }
+  output$snapshot_symbol_treemap <- renderPlot({
+    z <- snapshot_treemap_data()
+    if(nrow(z)) {
+      z$label <- paste0(z$name,' (',z$symbol,')')
+      snapshot_treemap_draw(z,'label')
+    } else snapshot_treemap_draw(z,'symbol')
+  },res=110)
+  output$snapshot_asset_treemap <- renderPlot({
+    z <- snapshot_treemap_data()
+    if(nrow(z)) {
+      labels <- c(STOCK='주식',BOND='채권',GOLD='금',CASH='현금성',OTHER='기타')
+      z$asset_label <- unname(labels[z$asset_class])
+      z$asset_label[is.na(z$asset_label)] <- '기타'
+      snapshot_treemap_draw(z,'asset_label')
+    } else snapshot_treemap_draw(z,'asset_class')
+  },res=110)
+  output$snapshot_treemap_note <- renderText({
+    z <- snapshot_treemap_data()
+    if(!nrow(z)) return('현재 저장된 시세로 평가 가능한 종목이 없습니다.')
+    sprintf('현재 평가 가능 %d개 보유행 · 합계 %s원 · 종목별/자산군별 동일 기준 (미평가 종목 제외)',
+      nrow(z),format(round(sum(z$value)),big.mark=',',scientific=FALSE,trim=TRUE))
   })
   collection_message <- reactiveVal('SQLite의 마지막 저장 시세로 자동 평가합니다. 새 시세가 필요할 때만 수집 버튼을 누르세요.')
   # 앱 시작 시 보유 종목 평가 및 배당 분석은 저장된 SQLite 자료만 읽는다.
@@ -2920,6 +3064,33 @@ server <- function(input, output, session) {
       if(d$mode=='withdraw') tags$p('자산 소진 비율: ',tags$b(sprintf('%.1f%%',100*d$ruin))),
       tags$p(class='text-muted','과거 변동성을 정규분포로 근사한 모의실험으로 실제 결과를 보장하지 않습니다.'))
   })
+  # v0.6.35: draw deterministic, sampled monthly Monte Carlo paths.
+  output$risk_mc_paths_chart <- renderPlot({
+    d <- risk_mc_result()
+    if(is.null(d) || is.null(d$paths) || !ncol(d$paths)) return(invisible(NULL))
+    path <- d$paths
+    months <- seq.int(0L,nrow(path)-1L)
+    good <- is.finite(path)
+    yy <- as.numeric(path[good]) / 1e8
+    if(!length(yy)) return(invisible(NULL))
+    ylim <- range(yy)
+    if(diff(ylim) < 1e-8) ylim <- ylim + c(-0.5,0.5)
+    # Values remain untouched; quantile bounds are only used to avoid a few extreme
+    # simulated paths flattening the entire visualization.
+    qrange <- stats::quantile(yy,c(0.01,0.99),na.rm=TRUE,names=FALSE)
+    if(all(is.finite(qrange)) && diff(qrange)>0) ylim <- qrange
+    plot(NA_real_,xlim=range(months/12),ylim=ylim,xlab='경과 연수',
+      ylab='시뮬레이션 자산 (억원)',main='몬테카를로 자산 경로 · 서로 다른 색상',type='n')
+    grid(col='#e4e9ef')
+    palette <- grDevices::hcl.colors(ncol(path),palette='Dynamic')
+    for(j in seq_len(ncol(path))) {
+      graphics::lines(months/12,path[,j]/1e8,col=grDevices::adjustcolor(palette[j],alpha.f=0.28),lwd=1)
+    }
+    median_curve <- apply(path,1,stats::median,na.rm=TRUE)/1e8
+    lines(months/12,median_curve,col='#123b68',lwd=3)
+    legend('topleft',legend=c(sprintf('표본 경로 %d개',ncol(path)),'표본 중앙값'),
+      col=c('#7d93b5','#123b68'),lwd=c(1,3),bty='n',cex=0.85)
+  })
   trajectory_filtered <- reactive({
     x <- trajectory_all()
     p <- input$trajectory_period
@@ -2936,6 +3107,141 @@ server <- function(input, output, session) {
   output$trajectory_dashboard <- renderUI({
     x <- trajectory_filtered()
     pms_trajectory_panel(x,compact=FALSE)
+  })
+  # v0.6.29: descriptive least-squares trend (calendar-day slope).
+  trajectory_lm_points <- function(col) {
+    z <- trajectory_filtered()
+    if(!nrow(z) || !all(c('date',col) %in% names(z))) return(data.frame())
+    d <- as.Date(z$date)
+    y <- suppressWarnings(as.numeric(z[[col]]))
+    ok <- !is.na(d) & is.finite(y)
+    z <- data.frame(date=d[ok], value=y[ok])
+    z <- z[order(z$date),,drop=FALSE]
+    z
+  }
+  trajectory_lm_fit <- function(col) {
+    z <- trajectory_lm_points(col)
+    if(nrow(z)<2 || length(unique(z$date))<2) return(NULL)
+    z$day <- as.numeric(z$date - min(z$date))
+    model <- stats::lm(value ~ day,data=z)
+    list(data=z,fit=model,slope=unname(stats::coef(model)[2]))
+  }
+  trajectory_trend_plot <- function(col,label) {
+    fit <- trajectory_lm_fit(col)
+    if(is.null(fit)) {plot.new();text(.5,.5,'추세선 계산에 필요한 날짜별 자료가 부족합니다.');return(invisible(NULL))}
+    z <- fit$data
+    plot(z$date,z$value,type='l',col='#2778bb',lwd=2,xlab='날짜',ylab='원',main=label)
+    lines(z$date,as.numeric(stats::predict(fit$fit,newdata=z)),col='#db6d22',lty=2,lwd=2)
+    legend('topleft',legend=c('실제 기록','선형회귀 추세선'),col=c('#2778bb','#db6d22'),lty=c(1,2),bty='n',cex=.85)
+    grid(col='#e3e9ef')
+  }
+  trajectory_slope_text <- function(col) {
+    fit <- trajectory_lm_fit(col)
+    if(is.null(fit)) return('일평균 증가분: 산출 불가 (서로 다른 날짜 2개 이상 필요)')
+    x <- fit$slope
+    paste0('일평균 증가분 (기울기): ',if(x>0) '+' else '',format(round(x),big.mark=',',scientific=FALSE,trim=TRUE),' 원/일')
+  }
+  # v0.6.32: render both series in one plot with a true independent right-hand scale.
+  output$trajectory_dual_axis <- renderPlot({
+    z <- trajectory_filtered()
+    needed <- c('date','value','profit')
+    if(!nrow(z) || !all(needed %in% names(z))) {
+      plot.new();text(.5,.5,'평가액·평가손익 기록이 없습니다.');return(invisible(NULL))
+    }
+    d <- as.Date(z$date)
+    v <- suppressWarnings(as.numeric(z$value)) / 1e8
+    p <- suppressWarnings(as.numeric(z$profit)) / 1e8
+    ok <- !is.na(d) & is.finite(v) & is.finite(p)
+    if(!any(ok)) {
+      plot.new();text(.5,.5,'양쪽 축에 표시할 유효한 기록이 없습니다.');return(invisible(NULL))
+    }
+    dat <- data.frame(date=d[ok],value=v[ok],profit=p[ok])
+    dat <- dat[order(dat$date),,drop=FALSE]
+    if(anyDuplicated(dat$date)) dat <- dat[!duplicated(dat$date,fromLast=TRUE),,drop=FALSE]
+    mkfit <- function(y) {
+      if(nrow(dat)<2L || length(unique(dat$date))<2L) return(rep(NA_real_,nrow(dat)))
+      as.numeric(stats::fitted(stats::lm(y ~ as.numeric(dat$date-min(dat$date)))))
+    }
+    vfit <- mkfit(dat$value)
+    pfit <- mkfit(dat$profit)
+    padded <- function(x) {
+      r <- range(x[is.finite(x)])
+      span <- diff(r)
+      if(span < 1e-9) span <- max(abs(r[1])*.03,.1)
+      r + c(-.08,.08)*span
+    }
+    yl <- padded(c(dat$value,vfit))
+    yr <- padded(c(dat$profit,pfit))
+    # Transform profit to the left-axis coordinate space only for plotting.
+    # Values shown on the right axis are always original profit units (100M KRW).
+    toleft <- function(y) yl[1] + (y-yr[1])/diff(yr)*diff(yl)
+    op <- par(mar=c(5.4,5.5,4.1,5.8)+.1)
+    on.exit(par(op),add=TRUE)
+    plot(dat$date,dat$value,type='n',ylim=yl,xlab='날짜',ylab='총평가액 (억원)',
+         main='총평가액 (왼쪽 축) / 평가손익 (오른쪽 축)',axes=FALSE)
+    abline(h=pretty(yl),col='#e8edf2',lty=3)
+    axis.Date(1,at=pretty(dat$date),format='%Y-%m-%d',las=2,cex.axis=.78)
+    axis(2,at=pretty(yl),las=1,col.axis='#2876bb')
+    ticks <- pretty(yr)
+    ticks <- ticks[ticks >= yr[1] & ticks <= yr[2]]
+    axis(4,at=toleft(ticks),labels=format(ticks,trim=TRUE,scientific=FALSE),
+         las=1,col.axis='#d36e2d')
+    mtext('평가손익 (억원)',side=4,line=3.8,col='#d36e2d')
+    box()
+    lines(dat$date,dat$value,col='#2876bb',lwd=2.4)
+    lines(dat$date,toleft(dat$profit),col='#d36e2d',lwd=2.4)
+    if(all(is.finite(vfit))) lines(dat$date,vfit,col='#2876bb',lty=2,lwd=2)
+    if(all(is.finite(pfit))) lines(dat$date,toleft(pfit),col='#d36e2d',lty=2,lwd=2)
+    legend('topleft',inset=.015,bty='n',cex=.84,ncol=2,
+      legend=c('총평가액','총평가액 추세선','평가손익','평가손익 추세선'),
+      col=c('#2876bb','#2876bb','#d36e2d','#d36e2d'),lty=c(1,2,1,2),lwd=2)
+  })
+  output$trajectory_value_lm <- renderPlot({trajectory_trend_plot('value','총평가액 추세')})
+  output$trajectory_profit_lm <- renderPlot({trajectory_trend_plot('profit','평가손익 추세')})
+  output$trajectory_value_slope <- renderText({trajectory_slope_text('value')})
+  output$trajectory_profit_slope <- renderText({trajectory_slope_text('profit')})
+  output$trajectory_aftertax_result <- renderUI({
+    tryCatch({
+      refresh();market_refresh()
+      z <- pms_valuation(con,include_zero=FALSE)
+      if(!nrow(z)) return(tags$div('평가 가능한 종목이 없습니다.'))
+      must <- c('country','quantity','profit_krw')
+      if(!all(must %in% names(z))) return(tags$div('계산 불가: 국가·보유수량·평가손익 필드 확인 필요'))
+      active <- is.finite(as.numeric(z$quantity)) & as.numeric(z$quantity)>0
+      vals <- suppressWarnings(as.numeric(z$profit_krw))
+      if(any(active & !is.finite(vals))) return(tags$div(class='alert alert-warning','시세 또는 취득원가가 누락된 보유종목이 있어 전량 매도 추정치를 계산할 수 없습니다.'))
+      country <- toupper(trimws(as.character(z$country)))
+      local <- country %in% c('KR','KOR','KOREA','대한민국','한국','국내')
+      overseas <- country %in% c('US','USA','UNITED STATES','미국','해외')
+      if(any(active & !(local|overseas))) return(tags$div(class='alert alert-warning','국내/해외 구분이 확인되지 않은 종목이 있어 계산할 수 없습니다.'))
+      # Use the explicit holdings tax category rather than inferring from names.
+      # Ambiguous classifications are not silently taxed or treated as exempt.
+      htax <- DBI::dbGetQuery(con, paste(
+        'SELECT UPPER(TRIM(country)) AS country, UPPER(TRIM(symbol)) AS symbol,',
+        'UPPER(TRIM(tax_type)) AS tax_type FROM holdings WHERE quantity > 0'))
+      zkey <- paste(toupper(trimws(as.character(z$country))),toupper(trimws(as.character(z$symbol))),sep='::')
+      hkey <- paste(htax$country,htax$symbol,sep='::')
+      types <- vapply(zkey,function(key) {
+        found <- unique(htax$tax_type[hkey==key])
+        if(length(found)!=1L || is.na(found) || !nzchar(found)) return(NA_character_)
+        found
+      },character(1))
+      if(any(active & local & is.na(types))) return(tags$div(class='alert alert-warning',
+        '일부 국내 종목의 과세유형이 없거나 서로 다릅니다. 보유종목의 과세유형을 확인해 주세요.'))
+      us_index <- active & local & types=='KR_US_INDEX_ETF'
+      us_index[is.na(us_index)] <- FALSE
+      domestic_profit <- sum(vals[active & local]); foreign_profit <- sum(vals[active & overseas])
+      index_profit <- sum(vals[us_index])
+      rate <- min(100,max(0,as.numeric(if(is.null(input$trajectory_domestic_tax)) 38 else input$trajectory_domestic_tax)))/100
+      domestic_tax <- max(0,index_profit)*rate
+      foreign_tax <- max(0,foreign_profit-20000000)*.22
+      net <- domestic_profit+foreign_profit-domestic_tax-foreign_tax
+      fmt <- function(x) paste0(format(round(x),big.mark=',',scientific=FALSE,trim=TRUE),'원')
+      tags$div(class='well',
+        tags$div(tags$b('매도 후 추정 평가이익: '),tags$strong(style='font-size:19px;',fmt(net))),
+        tags$div('세전 평가손익 ',fmt(domestic_profit+foreign_profit),' · 추정세금 ',fmt(domestic_tax+foreign_tax)),
+        tags$small('국내 상장 미국지수 ETF 세금 ',fmt(domestic_tax),' · 그 외 국내종목 세금 0원(가정) · 해외 세금 ',fmt(foreign_tax),' (해외 공제 2,000만원 가정)'))
+    },error=function(e)tags$div(class='alert alert-warning',paste('추정 계산 오류:',conditionMessage(e))))
   })
   output$trajectory_table <- DT::renderDT({
     x <- trajectory_filtered()
