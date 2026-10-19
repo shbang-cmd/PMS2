@@ -1,4 +1,27 @@
-# PMS2 v0.6.35: board total P&L; Monte Carlo multicolor paths.
+# ============================================================
+# PMS2 v0.6.28 | Ollama 인공지능의견 / 모바일 / 다중 PC 접속
+# ============================================================
+# [실행] 이 파일을 app.R 로 저장하고 pms.sqlite 와 같은 폴더에 둡니다.
+#        RStudio에서 Run App 클릭 또는 R 콘솔: shiny::runApp(".")
+# [서버] 기본 설정: 0.0.0.0:3838 (다른 PC에서도 접속 허용).
+#        서버 PC 접속: http://localhost:3838
+#        같은 LAN의 다른 PC/스마트폰: http://서버PC의사설IP:3838
+#        서버 IP 확인(Windows): cmd 실행 후 ipconfig -> IPv4 주소 확인.
+#        Windows 방화벽에서 TCP 3838 인바운드 허용이 필요할 수 있습니다.
+#        다른 네트워크/인터넷 접속은 공유기 포트포워딩 또는 VPN이 별도 필요합니다.
+# [화면] PC: 기존 탭/화면 유지, 스마트폰(폭 768px 이하): 하단 메뉴/전체메뉴.
+# [주의] 사용자 인증 없이 0.0.0.0으로 열면 해당 네트워크의 다른 사람이
+#        금융정보를 볼 수 있습니다. 인터넷에 포트를 무방비로 공개하지 마세요.
+# [주의] 서버 PC가 켜져 있고 R Shiny가 실행 중이어야 접속할 수 있습니다.
+# ============================================================
+
+# PMS2 v0.6.28: future 직접 실행 + Shiny 완료 폴링으로 promises 콜백 의존 제거.
+# PMS2 v0.6.31: AI 응답 길이 슬라이더 (짧게/중간/길게) 및 요청량 연동.
+# PMS2 v0.6.30: AI 분석 요청 경량화 (상위 12종목, 생성 250토큰, 사용자 메모/질문 750자).
+# PMS2 v0.6.32: AI 의견 Markdown(**굵게**, 제목, 목록) 화면 렌더링.
+# PMS2 v0.6.26: AI 버튼 클릭/서버 접수 상태 분리, 호출 진단 로그, 비동기 실행.
+# PMS2 v0.6.25: AI API를 future_promise 비동기 호출로 분리; 다른 탭/초기 화면 유지.
+# 필요 패키지: install.packages(c("future", "promises"))
 # PMS2 v0.6.18: add in-cell allocation data bars to board portfolio-weight column.
 # PMS2 v0.6.15: unified header totals and remove duplicate auto-status.
 # PMS2 v0.6.14: header portfolio NAV and prior-close changes from board valuation rows.
@@ -23,7 +46,7 @@
 # PMS2 v0.5.82 (2026-10-18): 보고서 생성 중 즉시 표시 스피너 및 완료/오류 자동 종료.
 # PMS2 v0.5.81 (2026-10-18): PDF XeLaTeX/Malgun Gothic Korean font and report number formatting fix.
 # ============================================================
-# PMS2 - 내주식 통계연구소
+# PMS2 - 개인금융자산 통계연구소
 # Version : v0.5.88
 # Date    : 2026-10-18
 # 변경사항:
@@ -203,7 +226,131 @@ choices <- list(
   account_type = c('일반'='GENERAL','ISA'='ISA','IRP'='IRP','연금저축'='PENSION')
 )
 
+# 같은 R Shiny 프로세스에 접속 중인 브라우저 세션 수를 공유합니다.
+# 각 브라우저 탭이 1세션이며, 접속/종료 시 모든 화면에 즉시 반영됩니다.
+pms_active_sessions <- shiny::reactiveVal(0L)
+
 ui <- fluidPage(
+  # 스마트폰 전용 하단 메뉴. 실제 탭은 기존 pms_tabs 하나만 사용합니다.
+  tags$head(
+    tags$meta(name='viewport', content='width=device-width, initial-scale=1, viewport-fit=cover'),
+    tags$style(HTML("
+      .pms-mobile-dock, .pms-mobile-sheet { display:none; }
+      @media (max-width:768px) {
+        body { padding-bottom:calc(78px + env(safe-area-inset-bottom, 0px)); }
+        body > .container-fluid { padding-left:9px; padding-right:9px; max-width:100%; }
+        /* 원래 탭은 DOM에서 유지하여 Shiny 입력/출력을 보존합니다. */
+        #pms_tabs.nav { display:none !important; }
+        .pms-mobile-dock { display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+          position:fixed; left:0; right:0; bottom:0; z-index:1200;
+          padding:7px 4px calc(8px + env(safe-area-inset-bottom, 0px));
+          background:#fff; border-top:1px solid #d9e2ec;
+          box-shadow:0 -3px 14px rgba(25,45,75,.12); }
+        .pms-mobile-dock button { background:none; border:0; color:#516178;
+          display:flex; flex-direction:column; align-items:center; gap:2px;
+          padding:7px 2px; font-size:12px; min-height:49px; border-radius:9px; }
+        .pms-mobile-dock button .pms-mobile-icon {font-size:21px;line-height:1.1;}
+        .pms-mobile-dock button[aria-current='page'] {color:#1266a6;background:#e9f3fa;font-weight:700;}
+        .pms-mobile-sheet { position:fixed; left:0; right:0; bottom:calc(72px + env(safe-area-inset-bottom, 0px));
+          z-index:1199; background:#fff; border-radius:15px 15px 0 0; max-height:67vh;
+          overflow-y:auto; padding:14px 12px; box-shadow:0 -6px 30px rgba(0,0,0,.18); }
+        .pms-mobile-sheet.pms-open {display:block;}
+        .pms-mobile-sheet-title {font-size:16px;font-weight:700;margin:0 0 9px 4px;}
+        .pms-mobile-sheet-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+        .pms-mobile-sheet-grid button {border:1px solid #dce4ed;border-radius:9px;background:#f8fafc;
+          text-align:left;padding:11px 9px;font-size:13px;min-height:44px;overflow-wrap:anywhere;}
+        .pms-mobile-sheet-grid button.pms-selected {border-color:#1980b8;background:#eaf5fc;}
+        .pms-mobile-sheet-close {float:right;border:0;background:none;font-size:20px;}
+        .tab-content {max-width:100%;min-width:0;}
+        .tab-pane {max-width:100%;min-width:0;}
+        h1,h2,h3 {overflow-wrap:anywhere;}
+        h3 {font-size:19px;} h4 {font-size:16px;}
+        .row {margin-left:-5px;margin-right:-5px;}
+        .row > [class*='col-'] {padding-left:5px;padding-right:5px;}
+        .well,.panel,.card {max-width:100%;}
+        .form-control, .selectize-input {max-width:100%;}
+        .btn,.form-control {min-height:40px;}
+        .dataTables_wrapper {max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch;}
+        .dataTables_wrapper table {width:max-content !important; min-width:100%;}
+        .table-responsive {overflow-x:auto; -webkit-overflow-scrolling:touch;}
+        .plotly, .plot-container, .html-widget, svg {max-width:100%;}
+      }
+      body.pms-dark .pms-mobile-dock, body.pms-dark .pms-mobile-sheet {
+        background:#1b2938;color:#eef3f9;border-color:#44576b;
+      }
+      body.pms-dark .pms-mobile-sheet-grid button {background:#283b4e;color:#eef3f9;border-color:#51657b;}
+    ")),
+    tags$script(HTML("
+      (function(){
+        function initMobile(){
+          var nav=document.getElementById('pms_tabs');
+          var sheet=document.getElementById('pms_mobile_sheet');
+          if(!nav || !sheet || !window.jQuery)return;
+          var list=sheet.querySelector('.pms-mobile-sheet-grid');
+          if(!list || list.getAttribute('data-ready'))return;
+          var anchors=Array.prototype.slice.call(nav.querySelectorAll('a[data-toggle=tab]'));
+          // Bootstrap Shiny tabsetPanel uses data-value for each direct tab.
+          if(!anchors.length)anchors=Array.prototype.slice.call(nav.querySelectorAll('a[href]'));
+          anchors.forEach(function(a){
+            var name=a.getAttribute('data-value')||a.textContent.trim();
+            if(!name)return;
+            var b=document.createElement('button'); b.type='button';b.textContent=name;
+            b.setAttribute('data-pms-tab',name);list.appendChild(b);
+          });
+          list.setAttribute('data-ready','1');
+          function activate(name){
+            var target=anchors.find(function(a){return (a.getAttribute('data-value')||a.textContent.trim())===name;});
+            if(target){jQuery(target).tab('show'); sheet.classList.remove('pms-open');
+              var more=document.getElementById('pms_mobile_more');if(more)more.setAttribute('aria-expanded','false');}
+          }
+          document.addEventListener('click',function(e){
+            var btn=e.target.closest('[data-pms-tab]');
+            if(btn){activate(btn.getAttribute('data-pms-tab'));return;}
+            var more=e.target.closest('#pms_mobile_more');
+            if(more){var open=sheet.classList.toggle('pms-open');more.setAttribute('aria-expanded',open?'true':'false');return;}
+            if(e.target.closest('#pms_mobile_close')){sheet.classList.remove('pms-open');
+              document.getElementById('pms_mobile_more').setAttribute('aria-expanded','false');}
+          });
+          function sync(){
+            var active=nav.querySelector('li.active > a');
+            var name=active&&(active.getAttribute('data-value')||active.textContent.trim());
+            document.querySelectorAll('.pms-mobile-dock [data-pms-tab]').forEach(function(b){
+              if(b.getAttribute('data-pms-tab')===name)b.setAttribute('aria-current','page');
+              else b.removeAttribute('aria-current');
+            });
+            list.querySelectorAll('button').forEach(function(b){b.classList.toggle('pms-selected',b.getAttribute('data-pms-tab')===name);});
+          }
+          jQuery(nav).on('shown.bs.tab', 'a[data-toggle=tab]',sync);sync();
+        }
+        document.addEventListener('DOMContentLoaded',initMobile);
+        if(window.jQuery)jQuery(document).on('shiny:connected',initMobile);
+      })();
+    "))
+  ),
+  # 모든 탭에서 보이는 접속 세션 표시 (모바일/PC 공통).
+  tags$head(tags$style(HTML("
+    .pms-session-strip {display:flex;justify-content:flex-end;align-items:center;
+      padding:3px 8px;margin:0 0 5px;min-height:25px;font-size:12px;color:#52687b;}
+    .pms-session-strip .shiny-text-output {display:inline-block;font-weight:700;
+      color:#1266a6;margin-left:5px;}
+    body.pms-dark .pms-session-strip {color:#c4d4e5;}
+    body.pms-dark .pms-session-strip .shiny-text-output {color:#9ad1ff;}
+    @media(max-width:768px){.pms-session-strip{font-size:11px;padding:2px 4px;}}
+  "))),
+  tags$div(class='pms-session-strip',
+    tags$span('● 접속 중 '),textOutput('pms_session_count',inline=TRUE)),
+  tags$div(class='pms-mobile-dock', role='navigation', 'aria-label'='모바일 빠른 메뉴',
+    tags$button(type='button', `data-pms-tab`='홈', tags$span(class='pms-mobile-icon','⌂'),'홈'),
+    tags$button(type='button', `data-pms-tab`='보유종목 편집', tags$span(class='pms-mobile-icon','▤'),'보유종목'),
+    tags$button(type='button', `data-pms-tab`='분산투자', tags$span(class='pms-mobile-icon','◉'),'분산투자'),
+    tags$button(id='pms_mobile_more',type='button',`aria-expanded`='false',
+      tags$span(class='pms-mobile-icon','☰'),'전체메뉴')
+  ),
+  tags$div(id='pms_mobile_sheet',class='pms-mobile-sheet',role='dialog',`aria-label`='전체 메뉴',
+    tags$button(id='pms_mobile_close',type='button',class='pms-mobile-sheet-close',`aria-label`='닫기','×'),
+    tags$div(class='pms-mobile-sheet-title','전체 메뉴'),
+    tags$div(class='pms-mobile-sheet-grid')
+  ),
 
   # v0.6.11: all DataTables: comma-group KRW monetary display in columns
   # not using pms_money_defs(). Manipulates visible cells only; DT's raw
@@ -703,8 +850,7 @@ ui <- fluidPage(
     tags$button(id='pms_dark_toggle',type='button',class='btn btn-default',style='margin-left:12px;',onclick='window.pmsSetDarkMode(!document.body.classList.contains(\"pms-dark\"))','☾ 다크모드')
   ),
   tags$div(id='pms_zoom_content',
-  titlePanel('PMS2 | 내주식 통계연구소', windowTitle='PMS2 | 내주식 통계연구소'),
-  tags$p(style='color:#68798a;font-size:13px;margin:-7px 0 14px 2px;', '나만의 투자자산 분석·위험관리 시스템'),
+  titlePanel('PMS2 | 개인금융자산 통계연구소'),
   tags$head(tags$script(HTML("
     (function(){
       function registerFetchClock(){
@@ -737,6 +883,13 @@ ui <- fluidPage(
     .pms-price-roll-track > span {display:block;line-height:1.35;}
     @keyframes pms-price-roll-up {from {transform:translateY(0);} to {transform:translateY(-50%);}}
     @media (prefers-reduced-motion:reduce) {.pms-price-roll-track {animation:none;transform:translateY(-50%);}}
+  "))),
+  tags$head(tags$style(HTML("
+    .pms-ai-page {max-width:1100px;margin:0 auto;padding-bottom:32px;}
+    .pms-ai-card {border:1px solid #dce5ee;background:#f9fbff;border-radius:12px;padding:17px;margin:14px 0;}
+    .pms-ai-card .shiny-text-output {max-width:100%;} 
+    body.pms-dark .pms-ai-card {background:#1e2e3e;color:#ecf4ff;border-color:#41586b;}
+    @media(max-width:768px){.pms-ai-card{padding:11px;margin:9px 0;} .pms-ai-page h3{font-size:19px;}}
   "))),
   tabsetPanel(id='pms_tabs', type='tabs',
   tabPanel('홈',
@@ -852,9 +1005,6 @@ ui <- fluidPage(
       column(3,numericInput('risk_mc_withdraw','연간 인출액(원)',48000000,min=0,step=1000000)),
       column(1,tags$div(style='margin-top:24px;',actionButton('risk_run_mc','실행',class='btn-primary')))),
     uiOutput('risk_mc_summary'),
-    plotOutput('risk_mc_paths_chart',height='430px'),
-    tags$p(class='text-muted',style='font-size:12px;',
-      '여러 색의 얇은 선은 시뮬레이션에서 일부 경로를 추출한 예시이며, 굵은 선은 표시 경로의 중앙값입니다. 실제 수익률 예측이나 보장 범위가 아닙니다.'),
     h4('상세 위험 통계'),DTOutput('risk_stats_table'),
     tags$div(class='alert alert-info',style='margin-top:16px;',
       tags$b('선택적 고급 분석: '),'GARCH(1,1)는 rugarch 패키지와 충분한 관측수가, PCA·팩터 회귀·과거 위기 리플레이는 별도의 자산별 가격·팩터·목표비중 자료가 필요합니다. 현재 기록만으로 결과를 꾸며내지 않으며 별도 연동 전까지는 제외합니다.')
@@ -1313,6 +1463,81 @@ ui <- fluidPage(
     actionButton('diversification_save_group','종목 투자그룹 저장',class='btn-primary'),
     textOutput('diversification_status')
   ),
+  tabPanel('인공지능의견',
+    tags$div(class='pms-ai-page',
+      tags$h3('인공지능의견 · 로컬 Ollama'),
+      tags$div(class='alert alert-info',style='margin:10px 0 15px;',
+        tags$strong('필수 설치 안내: '),
+        '이 기능을 사용하려면 PMS2를 실행하는 서버 PC에 Ollama가 별도로 설치되어 실행 중이어야 합니다. ',
+        '모델 qwen3.5:4b도 미리 다운로드해야 합니다. ',
+        tags$code('ollama pull qwen3.5:4b'),
+        ' 실행 후 아래의 [연결 확인] 버튼으로 상태를 점검하세요. ',
+        'Ollama가 없더라도 PMS2의 다른 탭은 사용할 수 있습니다.'),
+      tags$p(class='text-muted','서버 PC에서 실행하는 Ollama(qwen3.5:4b)가 저장된 종목·시세 데이터를 해석합니다. 버튼을 눌렀을 때만 분석하며 새로운 인터넷 시황이나 뉴스는 자동 조회하지 않습니다.'),
+      tags$div(class='pms-ai-card',
+        tags$div(style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;',
+          tags$strong('AI 연결:'), textOutput('pms_ai_connection',inline=TRUE),
+          actionButton('pms_ai_check','연결 확인',class='btn-default')),
+        tags$p(style='margin:9px 0 0;color:#607184;', '로컬 API: http://127.0.0.1:11434 · 모델: qwen3.5:4b')),
+      tags$div(class='pms-ai-card',
+        tags$h4('분석에 사용할 저장 데이터'),
+        verbatimTextOutput('pms_ai_data_info'),
+        tags$p(class='text-muted','당일 시황: 저장된 종목별 최근 시세와 기준시각만 자동 참조합니다. 시황 뉴스가 필요하면 아래에 직접 적어주세요.'),
+        textAreaInput('pms_ai_market_note','오늘의 시장 상황 메모 (선택)',value='',rows=3,
+          placeholder='예: 코스피 상승, 나스닥 하락 등 직접 확인한 사실과 출처/시각을 입력'),
+        textAreaInput('pms_ai_question','추가로 묻고 싶은 내용 (선택)',
+          value='현재 보유종목의 집중위험, 자산배분, 리밸런싱 시 고려사항을 분석해 주세요.',rows=3),
+        sliderInput('pms_ai_length','AI 분석 분량',min=1,max=3,value=2,step=1,
+          ticks=FALSE,sep='',width='360px'),
+        tags$div(style='font-size:12px;color:#607184;margin:-7px 0 10px;',
+          '1 · 짧게 (빠름)　　2 · 중간 (기본)　　3 · 길게 (상세)'),
+        textOutput('pms_ai_length_info'),
+        actionButton('pms_ai_analyze','현재 저장 데이터로 AI 의견 생성',class='btn-primary'),
+        tags$div(id='pms_ai_click_debug',role='status',style='margin-top:10px;font-weight:600;color:#245b92;',
+                 'AI 버튼을 누르면 이곳에 클릭 감지 여부가 표시됩니다.'),
+        tags$script(HTML("
+          (function(){
+            if(window.pmsAiDiagnosticInstalled)return;
+            window.pmsAiDiagnosticInstalled=true;
+            document.addEventListener('click',function(e){
+              var b=e.target.closest && e.target.closest('#pms_ai_analyze');
+              if(!b)return;
+              var d=document.getElementById('pms_ai_click_debug');
+              if(d)d.textContent='① 클릭 감지: Shiny 연결 상태 확인 중...';
+              var send=function(){
+                var connected=!!(window.Shiny && Shiny.shinyapp && Shiny.shinyapp.$socket && Shiny.shinyapp.$socket.readyState===1);
+                if(d)d.textContent=connected?'① 서버 연결 확인 · 클릭 이벤트 전송 중...':'① 서버 연결 상태 불명 · 이벤트 전송 시도 중...';
+                if(window.Shiny && typeof Shiny.setInputValue==='function'){
+                  Shiny.setInputValue('pms_ai_explicit_click',Date.now()+'-'+Math.random(),{priority:'event'});
+                  window.setTimeout(function(){
+                    if(d && d.textContent.indexOf('①')===0)d.textContent='① 이벤트 전송 후 서버 응답 지연(5초). RStudio Console 확인 · 서버가 다른 계산 중일 수 있음.';
+                  },5000);
+                }else if(d)d.textContent='① Shiny JavaScript 바인딩을 찾을 수 없습니다. 브라우저를 새로고침하세요.';
+              };
+              send();
+            },true);
+            if(window.Shiny && Shiny.addCustomMessageHandler){
+              Shiny.addCustomMessageHandler('pms_ai_debug',function(m){
+                var d=document.getElementById('pms_ai_click_debug');
+                if(d)d.textContent=m.text || '';
+              });
+            }else{
+              document.addEventListener('shiny:connected',function(){
+                Shiny.addCustomMessageHandler('pms_ai_debug',function(m){
+                  var d=document.getElementById('pms_ai_click_debug');
+                  if(d)d.textContent=m.text || '';
+                });
+              },{once:true});
+            }
+          })();
+        "))) ,
+      tags$div(class='pms-ai-card',id='pms_ai_result_card',
+        tags$h4('AI 투자분석 의견'),
+        textOutput('pms_ai_status'),
+        tags$div(class='pms-ai-markdown',style='overflow-wrap:anywhere;line-height:1.7;',uiOutput('pms_ai_answer')),
+        tags$p(class='text-muted',style='margin-top:15px;', 'AI 의견은 참고자료이며 투자수익을 보장하지 않습니다. 수치와 세금은 반드시 PMS2 계산 및 현행 규정으로 확인하세요.'))
+    )
+  ),
   tabPanel('보고서',
     h3('PMS2 종합 투자 보고서 · Quarto'),
     tags$p('현재 SQLite의 저장값을 읽어 자산규모, 자산 배분, 종목 집중도, 배당, 세금 참고지표, 과거 위험지표와 데이터 품질을 자세히 설명합니다. 외부 API는 호출하지 않습니다.'),
@@ -1425,6 +1650,312 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
+  # 전역 reactiveVal은 하나의 R 프로세스에 연결된 세션들이 공유합니다.
+  # 종료 콜백은 해당 세션이 연결 해제될 때 한 번만 실행됩니다.
+  pms_active_sessions(shiny::isolate(pms_active_sessions()) + 1L)
+  session$onSessionEnded(function() {
+    pms_active_sessions(max(0L, shiny::isolate(pms_active_sessions()) - 1L))
+  })
+  output$pms_session_count <- shiny::renderText({
+    paste0(pms_active_sessions(), '세션')
+  })
+
+  # AI 분석: 버튼 입력 시에만 SQLite를 읽고 로컬 Ollama에 전달합니다.
+  # 인터넷 뉴스/당일 지수 변동은 임의로 생성하지 않으며, 저장 기준시각을 포함합니다.
+  pms_ai_status <- reactiveVal('분석 실행 버튼을 누르면 로컬 AI 의견을 표시합니다.')
+  pms_ai_answer <- reactiveVal('아직 분석 결과가 없습니다.')
+  pms_ai_connection <- reactiveVal('연결 확인 전')
+  output$pms_ai_status <- renderText(pms_ai_status())
+  # Ollama 답변은 Markdown 문법을 사용하므로 일반 textOutput 대신 HTML로 표시합니다.
+  # HTML 태그는 먼저 이스케이프하여 AI 출력 내 임의 HTML 실행을 방지합니다.
+  output$pms_ai_answer <- renderUI({
+    txt <- pms_ai_answer()
+    safe <- htmltools::htmlEscape(txt)
+    if (requireNamespace('commonmark', quietly=TRUE)) {
+      html <- commonmark::markdown_html(safe, hardbreaks=TRUE)
+    } else if (requireNamespace('markdown', quietly=TRUE)) {
+      html <- markdown::markdownToHTML(text=safe, fragment.only=TRUE)
+    } else {
+      # 별도 Markdown 패키지가 없다면 **굵은 글씨**만이라도 표시합니다.
+      escaped <- gsub('\\*\\*([^*\\n]+)\\*\\*', '<strong>\\1</strong>', safe, perl=TRUE)
+      html <- gsub('\n','<br>',escaped,fixed=TRUE)
+    }
+    shiny::HTML(html)
+  })
+  output$pms_ai_connection <- renderText(pms_ai_connection())
+
+  pms_ai_length_settings <- function(value) {
+    level <- suppressWarnings(as.integer(value))
+    if (length(level)!=1L || is.na(level) || !(level %in% 1:3)) level <- 2L
+    switch(as.character(level),
+      '1'=list(label='짧게',top=12L,tokens=450L,ctx=3072L,input_chars=750L,
+               instruction='핵심 위험 2가지와 점검사항 2가지를 매우 간결하게 정리하세요.'),
+      '2'=list(label='중간',top=25L,tokens=1000L,ctx=4096L,input_chars=1500L,
+               instruction='핵심 위험 3가지, 자산배분 및 리밸런싱 점검사항 3가지를 설명하세요.'),
+      '3'=list(label='길게',top=40L,tokens=1800L,ctx=6144L,input_chars=2000L,
+               instruction='포트폴리오 집중 위험, 자산군 분산, 환율·세금, 리밸런싱 유의점과 실행 전 확인할 사항을 근거 중심으로 자세히 설명하세요.')
+    )
+  }
+  output$pms_ai_length_info <- renderText({
+    cfg <- pms_ai_length_settings(input$pms_ai_length)
+    sprintf('선택: %s · 상위 %d종목 · 최대 %d토큰 (길수록 분석시간 증가)',
+            cfg$label,cfg$top,cfg$tokens)
+  })
+  pms_ai_context <- function(top_n=12L) {
+    d <- pms_valuation(con,include_zero=FALSE)
+    if(!nrow(d)) stop('보유종목 데이터가 없습니다.')
+    d <- d[!is.na(d$quantity) & d$quantity > 0,,drop=FALSE]
+    if(!nrow(d)) stop('수량이 양수인 보유종목이 없습니다.')
+    numeric_value <- function(v) {v <- suppressWarnings(as.numeric(v));v[!is.finite(v)] <- NA_real_;v}
+    val <- numeric_value(d$market_value_krw)
+    cost <- if('cost_basis_krw' %in% names(d)) numeric_value(d$cost_basis_krw) else rep(NA_real_,nrow(d))
+    profit <- if('profit_krw' %in% names(d)) numeric_value(d$profit_krw) else rep(NA_real_,nrow(d))
+    n_valid <- sum(is.finite(val))
+    nav <- if(n_valid) sum(val,na.rm=TRUE) else NA_real_
+    csum <- if(any(is.finite(cost)))sum(cost,na.rm=TRUE) else NA_real_
+    psum <- if(any(is.finite(profit)))sum(profit,na.rm=TRUE) else NA_real_
+    fmt <- function(x) if(length(x)!=1 || !is.finite(x)) '자료 없음' else format(round(x),big.mark=',',scientific=FALSE,trim=TRUE)
+    price_stamp <- tryCatch(DBI::dbGetQuery(con,
+      'SELECT MAX(fetched_at) AS v FROM prices')$v[1],error=function(e) NA_character_)
+    fx <- tryCatch(DBI::dbGetQuery(con,
+      "SELECT pair, rate, quoted_at, fetched_at FROM fx_rates WHERE pair='USD/KRW' LIMIT 1"),error=function(e) data.frame())
+    meta <- c(paste0('분석 시각(한국시간): ',format(Sys.time(),'%Y-%m-%d %H:%M:%S',tz='Asia/Seoul')),
+      paste0('최근 시세 수집시각(원본 DB 기록): ',if(is.na(price_stamp))'기록 없음' else price_stamp),
+      paste0('활성 보유내역 수: ',nrow(d),' / 원화평가액 산출 가능: ',n_valid),
+      paste0('원화 평가총액(산출 가능한 종목만): ',fmt(nav),' 원'),
+      paste0('원화 취득원가(산출 가능한 종목만): ',fmt(csum),' 원'),
+      paste0('평가손익(산출 가능한 종목만): ',fmt(psum),' 원'),
+      paste0('평가불가 내역 수: ',sum(!is.finite(val))))
+    if(nrow(fx))meta <- c(meta,paste0('USD/KRW: ',fmt(as.numeric(fx$rate[1])), ' / 기준 ',fx$quoted_at[1]))
+    for(nm in c('country','asset_class','account_type')){
+      if(nm %in% names(d) && n_valid){
+        agg <- tapply(val[is.finite(val)],as.character(d[[nm]][is.finite(val)]),sum)
+        meta <- c(meta,paste0(nm,'별 평가액: ',paste(paste(names(agg),vapply(agg,fmt,character(1)),sep='='),collapse='; ')))
+      }
+    }
+    # 같은 종목이 여러 계좌에 있는 경우 한 종목으로 합산하여 중복 집중도 왜곡 방지
+    good <- which(is.finite(val))
+    lines <- character()
+    if(length(good)){
+      z <- aggregate(val[good],by=list(country=as.character(d$country[good]),
+        symbol=as.character(d$symbol[good]),name=as.character(d$name[good])),FUN=sum)
+      z <- z[order(z$x,decreasing=TRUE),,drop=FALSE]
+      z <- head(z,as.integer(top_n))
+      lines <- sprintf('%s %s (%s): %s원%s',z$country,z$name,z$symbol,
+        vapply(z$x,fmt,character(1)),if(is.finite(nav) && nav>0) paste0(' / ',sprintf('%.2f',100*z$x/nav),'%') else '')
+    }
+    context <- paste(c('아래는 PMS2 SQLite와 R 계산 결과이며 뉴스/전체 시장 상황은 포함하지 않음:',
+       meta,sprintf('평가액 상위 보유종목(종목별 계좌 합산, 최대 %d종목):',as.integer(top_n)),lines),collapse='\n')
+    list(text=context, info=paste(meta,collapse='\n'))
+  }
+  output$pms_ai_data_info <- renderText({
+    # 버튼 클릭 또는 탭 진입 때 다시 조회
+    input$pms_tabs
+    tryCatch(pms_ai_context()$info,error=function(e) paste('데이터 확인 실패:',conditionMessage(e)))
+  })
+  observeEvent(input$pms_ai_check,{
+    pms_ai_connection('연결 확인 중...')
+    tryCatch({
+      res <- httr::GET('http://127.0.0.1:11434/api/tags',httr::timeout(5))
+      httr::stop_for_status(res)
+      models <- jsonlite::fromJSON(httr::content(res,as='text',encoding='UTF-8'))$models$name
+      pms_ai_connection(if('qwen3.5:4b' %in% models)'정상 · qwen3.5:4b 사용 가능' else 'Ollama 응답 정상 · qwen3.5:4b 모델을 설치하세요')
+    },error=function(e)pms_ai_connection(paste('연결 실패:',conditionMessage(e))))
+  })
+  # AI 호출은 별도 R 프로세스로 실행하여 Shiny 홈/기타 세션의 UI를 막지 않습니다.
+  # 버튼 중복 클릭 시 결과가 서로 덮어쓰지 않도록 세션별 실행 잠금.
+  pms_ai_running <- reactiveVal(FALSE)
+  pms_ai_job <- reactiveVal(NULL)
+  pms_ai_started <- reactiveVal(NULL)
+  pms_ai_stream_path <- reactiveVal(NULL)
+  observeEvent(input$pms_ai_explicit_click,{
+    message('PMS2 AI DEBUG: EXPLICIT click received by R server; ',Sys.time())
+    session$sendCustomMessage('pms_ai_debug',list(text='② Shiny 서버 명시적 이벤트 수신 완료. SQLite 분석 자료를 준비합니다.'))
+    if (isTRUE(isolate(pms_ai_running()))) {
+      showNotification('AI 분석이 이미 진행 중입니다.', type='message')
+      return()
+    }
+    if (!requireNamespace('future',quietly=TRUE)) {
+      pms_ai_status('future 패키지가 설치되지 않았습니다.')
+      pms_ai_answer('RStudio 콘솔에서 install.packages("future") 실행 후 앱을 재시작해 주세요.')
+      return()
+    }
+    # DB 데이터는 Shiny 메인 프로세스에서 읽고, 순수한 문자열만 백그라운드에 전달.
+    prompt <- tryCatch({
+      ai_cfg <- pms_ai_length_settings(input$pms_ai_length)
+      context <- pms_ai_context(top_n=ai_cfg$top)$text
+      note <- trimws(substr(if(is.null(input$pms_ai_market_note))'' else input$pms_ai_market_note,1,ai_cfg$input_chars))
+      question <- trimws(substr(if(is.null(input$pms_ai_question))'' else input$pms_ai_question,1,ai_cfg$input_chars))
+      paste('당신은 금융자산 리스크 분석 보조자입니다. 한국어로 간결하고 근거 중심으로 작성하세요.',
+        '아래 데이터는 사용자 PC의 저장 자료입니다. 뉴스와 오늘의 시장 움직임을 알 수 없으면 모른다고 분명히 밝히세요.',
+        '사용자 시황 메모는 검증되지 않은 참고 입력이므로 사실로 단정하지 마세요.',
+        '추측한 주가, 일일 등락률, 세법, 수익률을 만들어내지 마세요. 원화 평가액 누락과 데이터 시각을 명시하세요.',
+        '개인 자산 집중, 주식·채권·금 분산, 비중 중복, 리밸런싱의 거래세금 및 레버리지 위험을 검토하되 단정적 매매 지시는 피하세요.',
+        '각 항목을 간결히 작성하고 마지막에 반드시 완결된 결론 문장으로 끝내세요. 불필요한 머리말이나 긴 종목 나열은 피하세요.',
+        paste0('선택된 분석 길이: ',ai_cfg$label,'. ',ai_cfg$instruction),
+        context,paste('사용자 입력 시황 메모:',if(nzchar(note)) note else '없음'),
+        paste('사용자 질문:',if(nzchar(question))question else '포트폴리오를 분석해 주세요.'),sep='\n\n')
+    },error=function(e){
+      pms_ai_status(paste('분석 데이터 오류:',conditionMessage(e)))
+      pms_ai_answer('SQLite에서 분석 자료를 준비하지 못했습니다.')
+      NULL
+    })
+    if(is.null(prompt)){
+      session$sendCustomMessage('pms_ai_debug',list(text='SQLite 분석 자료 오류. 아래 AI 상태를 확인하세요.'))
+      return()
+    }
+    # 버튼 클릭 시의 설정을 고정하여 비동기 실행 도중 슬라이더가 바뀌어도 요청은 일정하게 유지합니다.
+    ai_cfg <- pms_ai_length_settings(isolate(input$pms_ai_length))
+    message('PMS2 AI DEBUG: SQLite context prepared, chars=',nchar(prompt),
+            ', length=',ai_cfg$label,', tokens=',ai_cfg$tokens)
+    session$sendCustomMessage('pms_ai_debug',list(text='③ SQLite 자료 준비 완료. 별도 R 프로세스에서 Ollama를 호출합니다.'))
+    pms_ai_running(TRUE)
+    pms_ai_status('AI 분석 요청 전송 완료. Ollama가 답변을 생성하고 있습니다. 잠시 기다려 주세요.')
+    pms_ai_answer('분석 중입니다. 모델이 처음 로드되는 경우 시간이 걸릴 수 있습니다. 다른 메뉴는 사용할 수 있습니다.')
+    # v0.6.29: worker의 NDJSON 스트림을 임시 파일로 전달합니다.
+    # 응답을 모두 기다리는 stream=FALSE 대신 첫 토큰부터 화면에 표시합니다.
+    stream_file <- tempfile(pattern='pms_ai_stream_',fileext='.txt')
+    file.create(stream_file)
+    pms_ai_stream_path(stream_file)
+    pending <- tryCatch({
+      if (inherits(future::plan(), 'sequential')) {
+        future::plan(future::multisession, workers=2L)
+      }
+      prompt_to_send <- as.character(prompt)
+      output_path <- stream_file
+      max_tokens <- as.integer(ai_cfg$tokens)
+      context_window <- as.integer(ai_cfg$ctx)
+      future::future({
+        if (!requireNamespace('curl',quietly=TRUE)) stop('curl 패키지를 설치해 주세요.')
+        if (!requireNamespace('jsonlite',quietly=TRUE)) stop('jsonlite 패키지를 설치해 주세요.')
+        payload <- jsonlite::toJSON(list(
+          model='qwen3.5:4b',prompt=prompt_to_send,
+          stream=TRUE,think=FALSE,keep_alive='10m',
+          options=list(num_predict=max_tokens,num_ctx=context_window,temperature=0.3)
+        ),auto_unbox=TRUE,null='null')
+        h <- curl::new_handle()
+        curl::handle_setopt(h,post=TRUE,postfields=as.character(payload),
+          timeout=600L,connecttimeout=10L)
+        curl::handle_setheaders(h,'Content-Type'='application/json')
+        buff <- ''
+        all_text <- ''
+        err <- NULL
+        done <- FALSE
+        truncated <- FALSE
+        sink <- file(output_path,open='ab')
+        on.exit(close(sink),add=TRUE)
+        process_line <- function(line){
+          if(!nzchar(trimws(line)))return(invisible(NULL))
+          x <- tryCatch(jsonlite::fromJSON(line,simplifyVector=FALSE),error=function(e)NULL)
+          if(is.null(x))return(invisible(NULL))
+          if(!is.null(x$error))stop(as.character(x$error))
+          if(!is.null(x$response) && nzchar(x$response)){
+            chunk <- as.character(x$response)
+            writeBin(charToRaw(enc2utf8(chunk)),sink)
+            flush(sink)
+            all_text <<- paste0(all_text,chunk)
+          }
+          if(isTRUE(x$done)) {
+            done <<- TRUE
+            if(!is.null(x$done_reason) && identical(as.character(x$done_reason),'length')) truncated <<- TRUE
+          }
+          invisible(NULL)
+        }
+        response <- curl::curl_fetch_stream('http://127.0.0.1:11434/api/generate',
+          function(bytes){
+            buff <<- paste0(buff,rawToChar(bytes))
+            parts <- strsplit(buff,'\n',fixed=TRUE)[[1]]
+            if(endsWith(buff,'\n')){
+              buff <<- ''
+              lines <- parts
+            }else{
+              buff <<- parts[length(parts)]
+              lines <- head(parts,-1L)
+            }
+            for(line in lines)process_line(line)
+          },handle=h)
+        if(nzchar(trimws(buff)))process_line(buff)
+        if(response$status_code != 200L)
+          stop(sprintf('Ollama HTTP %s',response$status_code))
+        if(!done)stop('Ollama 스트림이 정상 완료 표시 없이 종료됐습니다.')
+        if(!nzchar(trimws(all_text)))stop('AI 응답 본문이 비어 있습니다.')
+        if(truncated) {
+          paste0(all_text,'\n\n[안내: 생성 토큰 제한으로 답변이 중간에 종료됐습니다. AI 분석 분량을 한 단계 높여 다시 요청해 주세요.]')
+        } else all_text
+      })
+    },error=function(e)e)
+    if(inherits(pending,'error')){
+      pms_ai_running(FALSE)
+      pms_ai_status(paste('AI 실행 시작 오류:',conditionMessage(pending)))
+      pms_ai_answer('분석을 시작하지 못했습니다. RStudio Console을 확인하세요.')
+      session$sendCustomMessage('pms_ai_debug',list(text=paste('④ 실행 시작 오류:',conditionMessage(pending))))
+      unlink(stream_file)
+      pms_ai_stream_path(NULL)
+      return()
+    }
+    pms_ai_job(pending)
+    pms_ai_started(Sys.time())
+    message('PMS2 AI DEBUG: streaming future dispatched')
+    session$sendCustomMessage('pms_ai_debug',list(text='④ Ollama 스트리밍 연결 중 — 첫 응답을 기다립니다.'))
+  })
+
+  # Shiny 세션이 살아 있는 동안만 1초 주기로 결과 파일을 읽습니다.
+  observe({
+    if (!isTRUE(pms_ai_running())) return()
+    shiny::invalidateLater(1000, session)
+    job <- isolate(pms_ai_job())
+    if(is.null(job))return()
+    path <- isolate(pms_ai_stream_path())
+    partial <- if(!is.null(path) && file.exists(path))tryCatch({
+      sz <- file.info(path)$size
+      if(is.finite(sz) && sz>0){
+        r <- readBin(path,what='raw',n=sz)
+        iconv(rawToChar(r),from='UTF-8',to='UTF-8',sub='')
+      }else ''
+    },error=function(e)'') else ''
+    if(nzchar(partial)){
+      pms_ai_answer(partial)
+    }
+    ready <- tryCatch(future::resolved(job),error=function(e)e)
+    if(inherits(ready,'error')){
+      msg <- conditionMessage(ready)
+      pms_ai_answer(paste('비동기 상태 확인 실패:',msg,'\n',partial))
+      pms_ai_status('AI 분석 실패')
+      session$sendCustomMessage('pms_ai_debug',list(text=paste('④ 상태 확인 실패:',msg)))
+      pms_ai_job(NULL);pms_ai_running(FALSE)
+      return()
+    }
+    if(!isTRUE(ready)){
+      elapsed <- as.numeric(difftime(Sys.time(),isolate(pms_ai_started()),units='secs'))
+      if(is.finite(elapsed)){
+        status <- if(nzchar(partial))'AI 답변 수신 중' else '첫 AI 응답 대기 중'
+        pms_ai_status(sprintf('%s · 경과 %.0f초 · 최대 600초',status,elapsed))
+        if(nzchar(partial))session$sendCustomMessage('pms_ai_debug',list(text=sprintf('④ AI 답변 수신 중 · %d자',nchar(partial))))
+      }
+      return()
+    }
+    answer <- tryCatch(future::value(job),error=function(e)e)
+    pms_ai_job(NULL);pms_ai_running(FALSE)
+    if(!is.null(path) && file.exists(path))unlink(path)
+    pms_ai_stream_path(NULL)
+    if(inherits(answer,'error')){
+      msg <- conditionMessage(answer)
+      message('PMS2 AI ERROR: ',msg)
+      if(!nzchar(partial))pms_ai_answer(paste('AI 분석 실패:',msg))
+      else pms_ai_answer(paste0(partial,'\n\n[응답 도중 오류: ',msg,']'))
+      pms_ai_status('Ollama 분석 오류')
+      session$sendCustomMessage('pms_ai_debug',list(text=paste('④ AI 호출 실패:',msg)))
+    }else{
+      pms_ai_answer(answer)
+      pms_ai_status(paste0('분석 완료 · ',format(Sys.time(),'%Y-%m-%d %H:%M:%S',tz='Asia/Seoul'),' KST · 저장 시세 기반'))
+      session$sendCustomMessage('pms_ai_debug',list(text='④ AI 답변 도착. 결과 표시 완료.'))
+    }
+  })
+  session$onSessionEnded(function(){
+    path <- isolate(pms_ai_stream_path())
+    if(!is.null(path) && file.exists(path))unlink(path)
+  })
+
   saved_eval_status <- reactiveVal('서버 준비 완료. 저장된 시세·배당 평가 버튼을 누르세요.')
   output$saved_eval_server_status <- renderText(saved_eval_status())
   saved_eval_ack <- function(message, error=FALSE) {
@@ -2444,16 +2975,6 @@ server <- function(input, output, session) {
         tags$span(tags$b('총평가액 '),val(x$nav)),
         tags$span(class=delta_cls,style='font-weight:750;',
           tags$b('전일대비 '),val(x$change,TRUE),pct_label),
-        local({
-          costs <- pms_board_purchase_profit(pms_board_valuation_changes(board_prices(),con))
-          pnl <- suppressWarnings(as.numeric(costs[['매수금대비손익(원)']]))
-          ok <- length(pnl) > 0L && all(is.finite(pnl))
-          total_pnl <- if(ok) sum(pnl) else NA_real_
-          pnl_cls <- if(!ok || total_pnl == 0) 'pms-move-flat' else if(total_pnl > 0) 'pms-move-up' else 'pms-move-down'
-          tags$span(class=pnl_cls,style='font-weight:750;white-space:nowrap;',
-            tags$b('총평가손익 '),board_amount_text(total_pnl,TRUE),
-            if(!ok) tags$small(style='font-weight:400;',' (취득원가·시세 확인 필요)'))
-        }),
         pms_board_fx_header())
     },error=function(e) {
       tags$span(style='font-size:12px;color:#b35b13;',
@@ -3063,33 +3584,6 @@ server <- function(input, output, session) {
       tags$p('시뮬레이션 MDD 중앙값: ',tags$b(pms_risk_pct(d$mddq[2]))),
       if(d$mode=='withdraw') tags$p('자산 소진 비율: ',tags$b(sprintf('%.1f%%',100*d$ruin))),
       tags$p(class='text-muted','과거 변동성을 정규분포로 근사한 모의실험으로 실제 결과를 보장하지 않습니다.'))
-  })
-  # v0.6.35: draw deterministic, sampled monthly Monte Carlo paths.
-  output$risk_mc_paths_chart <- renderPlot({
-    d <- risk_mc_result()
-    if(is.null(d) || is.null(d$paths) || !ncol(d$paths)) return(invisible(NULL))
-    path <- d$paths
-    months <- seq.int(0L,nrow(path)-1L)
-    good <- is.finite(path)
-    yy <- as.numeric(path[good]) / 1e8
-    if(!length(yy)) return(invisible(NULL))
-    ylim <- range(yy)
-    if(diff(ylim) < 1e-8) ylim <- ylim + c(-0.5,0.5)
-    # Values remain untouched; quantile bounds are only used to avoid a few extreme
-    # simulated paths flattening the entire visualization.
-    qrange <- stats::quantile(yy,c(0.01,0.99),na.rm=TRUE,names=FALSE)
-    if(all(is.finite(qrange)) && diff(qrange)>0) ylim <- qrange
-    plot(NA_real_,xlim=range(months/12),ylim=ylim,xlab='경과 연수',
-      ylab='시뮬레이션 자산 (억원)',main='몬테카를로 자산 경로 · 서로 다른 색상',type='n')
-    grid(col='#e4e9ef')
-    palette <- grDevices::hcl.colors(ncol(path),palette='Dynamic')
-    for(j in seq_len(ncol(path))) {
-      graphics::lines(months/12,path[,j]/1e8,col=grDevices::adjustcolor(palette[j],alpha.f=0.28),lwd=1)
-    }
-    median_curve <- apply(path,1,stats::median,na.rm=TRUE)/1e8
-    lines(months/12,median_curve,col='#123b68',lwd=3)
-    legend('topleft',legend=c(sprintf('표본 경로 %d개',ncol(path)),'표본 중앙값'),
-      col=c('#7d93b5','#123b68'),lwd=c(1,3),bty='n',cex=0.85)
   })
   trajectory_filtered <- reactive({
     x <- trajectory_all()
@@ -4103,5 +4597,8 @@ pms_default_chrome_launch <- function(url) {
   tryCatch(system2(chrome[1],c('--new-window','--start-maximized',shQuote(url)),
                    wait=FALSE,stdout=FALSE,stderr=FALSE),error=function(e)utils::browseURL(url))
 }
-options(shiny.launch.browser=pms_default_chrome_launch)
-shinyApp(ui,server,options=list(launch.browser=pms_default_chrome_launch))
+# LAN 내 다른 클라이언트 접속을 기본 허용합니다. 방화벽 허용은 별도 필요.
+options(shiny.host='0.0.0.0', shiny.port=3838,
+        shiny.launch.browser=pms_default_chrome_launch)
+shinyApp(ui,server,options=list(host='0.0.0.0', port=3838,
+                                launch.browser=pms_default_chrome_launch))
