@@ -189,7 +189,6 @@ pms_money_defs <- function(df) {
 # BotFather에서 노출된 토큰은 /revoke 후 새 토큰으로 교체하세요.
 PMS_TG_BOT_TOKEN <- "새_봇_토큰_입력"
 
-PMS_TG_CHAT_ID   <- "7589805373"
 pms_tg_auto_busy <- FALSE
 pms_tg_configured <- function() {
   nzchar(PMS_TG_BOT_TOKEN) && nzchar(PMS_TG_CHAT_ID) &&
