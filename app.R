@@ -185,6 +185,42 @@ pms_money_defs <- function(df) {
                    className='dt-right pms-numeric',render=render)))
 }
 
+# PMS2 Telegram 개인 알림 설정 (소스 외부 공유 전 토큰 삭제)
+# BotFather에서 노출된 토큰은 /revoke 후 새 토큰으로 교체하세요.
+PMS_TG_BOT_TOKEN <- "새_봇_토큰_입력"
+PMS_TG_CHAT_ID   <- "개인_chat_id_입력"
+
+pms_tg_auto_busy <- FALSE
+pms_tg_configured <- function() {
+  nzchar(PMS_TG_BOT_TOKEN) && nzchar(PMS_TG_CHAT_ID) &&
+    !grepl("입력|여기에|<", PMS_TG_BOT_TOKEN) &&
+    !grepl("입력|여기에|<", PMS_TG_CHAT_ID)
+}
+pms_tg_send <- function(message) {
+  if (!pms_tg_configured()) stop("app.R 상단에 새 Bot Token과 개인 chat_id를 입력하세요.")
+  if (!requireNamespace("httr", quietly=TRUE)) stop("httr 패키지가 필요합니다: install.packages('httr')")
+  url <- paste0("https://api.telegram.org/bot", PMS_TG_BOT_TOKEN, "/sendMessage")
+  resp <- httr::POST(url, body=list(chat_id=PMS_TG_CHAT_ID, text=message),
+                     encode="form", httr::timeout(12))
+  httr::stop_for_status(resp)
+  ans <- httr::content(resp, as="parsed", encoding="UTF-8")
+  if (!isTRUE(ans$ok)) stop("텔레그램 서버가 발송을 수락하지 않았습니다.")
+  invisible(TRUE)
+}
+pms_tg_setting_init <- function(db) {
+  DBI::dbExecute(db, "CREATE TABLE IF NOT EXISTS pms_tg_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)")
+  DBI::dbExecute(db, "INSERT OR IGNORE INTO pms_tg_settings(setting_key,setting_value) VALUES ('auto_16','1')")
+  DBI::dbExecute(db, "CREATE TABLE IF NOT EXISTS pms_tg_sent (send_date TEXT PRIMARY KEY, sent_at TEXT NOT NULL, total REAL NOT NULL, delta REAL NOT NULL)")
+}
+pms_tg_setting_get <- function(db) {
+  x <- DBI::dbGetQuery(db,"SELECT setting_value FROM pms_tg_settings WHERE setting_key='auto_16'")
+  !nrow(x) || identical(x$setting_value[[1]], "1")
+}
+pms_tg_setting_put <- function(db, enabled) {
+  DBI::dbExecute(db, "INSERT OR REPLACE INTO pms_tg_settings(setting_key,setting_value) VALUES ('auto_16',?)",
+                 params=list(if (isTRUE(enabled)) "1" else "0"))
+}
+
 source(file.path('R', 'db.R'), local = TRUE)
 source(file.path('R', 'holdings_excel.R'), local = TRUE)
 source(file.path('R', 'prices.R'), local = TRUE)
@@ -209,6 +245,7 @@ source(file.path('R', 'fire_planning.R'), local = TRUE)
 
 con <- open_pms_db()
 pms_contrib_init(con)
+pms_tg_setting_init(con)
 onStop(function() {
   if (DBI::dbIsValid(con)) DBI::dbDisconnect(con)
 })
@@ -1643,6 +1680,12 @@ ui <- fluidPage(
     uiOutput('report_summary_ui'),
     tags$h4('보고서 본문 미리보기'),
     uiOutput('report_inline_view'),
+    tags$hr(),
+    tags$h4('텔레그램 일일 자산 보고'),
+    tags$p(class='text-muted','전광판과 동일한 보유자산 총평가액 및 평가증감(당일 환율 고정 기준)을 발송합니다. 시세 갱신시각을 확인하세요.'),
+    checkboxInput('pms_tg_auto_16','16:00 자동보고 사용 (기본 ON)',value=TRUE),
+    actionButton('pms_tg_send_manual','텔레그램 수동 전송',class='btn-primary'),
+    tags$div(style='margin-top:10px;',textOutput('pms_tg_status')),
     tags$p(class='text-muted','보고서 생성은 현재 저장된 값의 일회성 스냅샷이며, 새 시세·배당 조회나 자동 재생성은 하지 않습니다. HTML 파일은 독립된 웹페이지로 열 수 있습니다.')
   )
   ) # tabsetPanel
@@ -2904,6 +2947,72 @@ server <- function(input, output, session) {
       list(value=if(any(good)) sum(v[good]) else NA_real_,valid=sum(good),total=length(v))
     }
     list(nav=get_sum('총평가액(원)'),change=get_sum('평가증감(원)'))
+  })
+  # Telegram: 전광판과 동일한 평가 집계값 사용. 값 미수집/일부 종목 누락이면 전송 차단.
+  tg_status <- reactiveVal('대기 중 · 상단 Bot Token / chat_id 입력 필요')
+  output$pms_tg_status <- renderText(tg_status())
+  observeEvent(TRUE, {
+    updateCheckboxInput(session, 'pms_tg_auto_16', value=pms_tg_setting_get(con))
+  }, once=TRUE)
+  observeEvent(input$pms_tg_auto_16, {
+    pms_tg_setting_put(con, isTRUE(input$pms_tg_auto_16))
+  }, ignoreInit=TRUE)
+  tg_message <- function() {
+    z <- isolate(board_totals())
+    nav <- z$nav; delta <- z$change
+    if (!is.finite(nav$value) || !is.finite(delta$value) || nav$valid<1L ||
+        nav$valid<nav$total || delta$valid<1L || delta$valid<delta$total)
+      stop('시세 미수집 또는 평가 누락 종목이 있어 전송하지 않습니다. 시세를 확인하세요.')
+    value <- nav$value; change <- delta$value
+    pct <- if (is.finite(value-change) && abs(value-change)>1) 100*change/(value-change) else NA_real_
+    sgn <- if (change>0) '▲' else if (change<0) '▼' else '－'
+    paste0('📊 PMS2 일일 자산 보고\n',
+           '기준시각: ', format(Sys.time(), '%Y-%m-%d %H:%M', tz='Asia/Seoul'), ' KST\n',
+           '총평가액: ', format(round(value),big.mark=',',scientific=FALSE,trim=TRUE), '원\n',
+           '전일 종가 대비 평가증감: ',sgn,' ',
+           format(round(abs(change)),big.mark=',',scientific=FALSE,trim=TRUE),'원',
+           if (is.finite(pct)) sprintf(' (%+.2f%%)',pct) else '', '\n',
+           '※ 전광판 기준. 보유수량/현재 적용환율 고정, 환율변동·입출금 효과 제외.\n',
+           '※ 16시 기준 해외주식은 전일 또는 최근 저장 시세일 수 있습니다.')
+  }
+  observeEvent(input$pms_tg_send_manual, {
+    tryCatch({
+      pms_tg_send(tg_message())
+      tg_status(paste('수동 전송 성공:',format(Sys.time(),'%Y-%m-%d %H:%M:%S')))
+      showNotification('텔레그램 수동 전송 성공',type='message')
+    },error=function(e){
+      tg_status(paste('수동 전송 실패:',conditionMessage(e)))
+      showNotification(conditionMessage(e),type='error',duration=10)
+    })
+  })
+  # DB 날짜 PRIMARY KEY로 동일 날짜 자동발송 중복 방지.
+  # Shiny 세션이 살아 있고 국내 거래일(월~금)인 날 16:00~16:59에 한 번 시도합니다.
+  observe({
+    invalidateLater(30000,session)
+    now <- as.POSIXct(Sys.time(),tz='Asia/Seoul')
+    today <- format(now,'%Y-%m-%d',tz='Asia/Seoul')
+    hour <- as.integer(format(now,'%H',tz='Asia/Seoul'))
+    weekday <- as.integer(format(now,'%u',tz='Asia/Seoul'))
+    if (hour!=16L || weekday>5L || !isTRUE(pms_tg_setting_get(con)) || !pms_tg_configured())
+      return(invisible(NULL))
+    done <- DBI::dbGetQuery(con,'SELECT send_date FROM pms_tg_sent WHERE send_date=?',params=list(today))
+    if (nrow(done)) return(invisible(NULL))
+    # 복수 브라우저 세션을 위한 프로세스 수준 발송 잠금
+    if (isTRUE(pms_tg_auto_busy)) return(invisible(NULL))
+    pms_tg_auto_busy <<- TRUE
+    on.exit({pms_tg_auto_busy <<- FALSE},add=TRUE)
+    tryCatch({
+      msg <- tg_message()
+      z <- isolate(board_totals())
+      pms_tg_send(msg)
+      DBI::dbExecute(con,
+        'INSERT OR IGNORE INTO pms_tg_sent(send_date,sent_at,total,delta) VALUES (?,?,?,?)',
+        params=list(today,format(now,'%Y-%m-%d %H:%M:%S',tz='Asia/Seoul'),
+                    z$nav$value,z$change$value))
+      tg_status(paste('16시 자동보고 성공:',today))
+    },error=function(e){
+      tg_status(paste('16시 자동보고 실패:',conditionMessage(e)))
+    })
   })
   # FX quote in the board header: current saved USD/KRW versus prior trading date.
   # Read-only SQLite access; no new schema and no network call on rendering.
