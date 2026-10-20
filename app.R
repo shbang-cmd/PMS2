@@ -188,9 +188,6 @@ pms_money_defs <- function(df) {
 # PMS2 Telegram 개인 알림 설정 (소스 외부 공유 전 토큰 삭제)
 # BotFather에서 노출된 토큰은 /revoke 후 새 토큰으로 교체하세요.
 PMS_TG_BOT_TOKEN <- "새_봇_토큰_입력"
-PMS_TG_CHAT_ID   <- "개인_chat_id_입력"
-
-PMS_TG_BOT_TOKEN <- "8990278369:AAFtjphXAxUhNii4bJ1gjGo6QmfX7Fn_Qr4"
 
 PMS_TG_CHAT_ID   <- "7589805373"
 pms_tg_auto_busy <- FALSE
