@@ -190,6 +190,9 @@ pms_money_defs <- function(df) {
 PMS_TG_BOT_TOKEN <- "새_봇_토큰_입력"
 PMS_TG_CHAT_ID   <- "개인_chat_id_입력"
 
+PMS_TG_BOT_TOKEN <- "8990278369:AAFtjphXAxUhNii4bJ1gjGo6QmfX7Fn_Qr4"
+
+PMS_TG_CHAT_ID   <- "7589805373"
 pms_tg_auto_busy <- FALSE
 pms_tg_configured <- function() {
   nzchar(PMS_TG_BOT_TOKEN) && nzchar(PMS_TG_CHAT_ID) &&
@@ -199,12 +202,24 @@ pms_tg_configured <- function() {
 pms_tg_send <- function(message) {
   if (!pms_tg_configured()) stop("app.R 상단에 새 Bot Token과 개인 chat_id를 입력하세요.")
   if (!requireNamespace("httr", quietly=TRUE)) stop("httr 패키지가 필요합니다: install.packages('httr')")
-  url <- paste0("https://api.telegram.org/bot", PMS_TG_BOT_TOKEN, "/sendMessage")
-  resp <- httr::POST(url, body=list(chat_id=PMS_TG_CHAT_ID, text=message),
-                     encode="form", httr::timeout(12))
-  httr::stop_for_status(resp)
-  ans <- httr::content(resp, as="parsed", encoding="UTF-8")
-  if (!isTRUE(ans$ok)) stop("텔레그램 서버가 발송을 수락하지 않았습니다.")
+  token <- trimws(PMS_TG_BOT_TOKEN)
+  chat_id <- trimws(as.character(PMS_TG_CHAT_ID))
+  if (!nzchar(chat_id)) stop("텔레그램 Chat ID가 비어 있습니다.")
+  if (!nzchar(as.character(message))) stop("텔레그램 메시지가 비어 있습니다.")
+  url <- paste0("https://api.telegram.org/bot", token, "/sendMessage")
+  resp <- httr::POST(url,
+    body=list(chat_id=chat_id, text=enc2utf8(as.character(message))),
+    encode="form", httr::timeout(12))
+  # Parse the Telegram error body before checking HTTP status so 400/403
+  # can identify invalid chat IDs, blocked bots and missing permissions.
+  status <- httr::status_code(resp)
+  ans <- tryCatch(httr::content(resp, as="parsed", type="application/json", encoding="UTF-8"),
+                  error=function(e) NULL)
+  if (!identical(status, 200L) || !isTRUE(ans$ok)) {
+    description <- if (is.list(ans) && !is.null(ans$description))
+      as.character(ans$description) else "텔레그램 응답 내용을 확인할 수 없습니다."
+    stop(sprintf("Telegram HTTP %d: %s", status, description), call.=FALSE)
+  }
   invisible(TRUE)
 }
 pms_tg_setting_init <- function(db) {
@@ -942,7 +957,7 @@ ui <- fluidPage(
   tabPanel('전일대비전광판',
     tags$div(class='pms-board-header',style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;position:sticky;top:47px;z-index:1020;padding:7px 12px;',
       tags$div(style='display:flex;align-items:center;flex-wrap:wrap;gap:14px;',
-        h3(style='margin:7px 0;','전일대비전광판 · 보유종목 최신 시세'),
+        h3(style='margin:7px 0;','전일대비전광판 · 보유종목 최신 시세', tags$small(style='font-size:11px;color:#835d18;margin-left:9px;', '진단판 10.20-B')),
         tags$div(class='pms-board-totals',style='display:flex;align-items:center;flex-wrap:wrap;gap:11px;font-size:15px;font-weight:700;',
           uiOutput('board_header_totals',inline=TRUE))),
       tags$div(style='display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:12px;',
@@ -954,6 +969,7 @@ ui <- fluidPage(
                   textOutput('pms_board_auto_detail',inline=TRUE)),
         tags$span(style='font-size:14px;font-weight:700;white-space:nowrap;',
                   tags$span(id='pms_board_last_fetch_text', '최근 시세 수집: 조회 중…')))),
+    uiOutput('board_missing_detail'),
     tags$p(class='text-muted','현재가와 직전 거래일 종가 비교 · 10분 자동수집 옵션에 따라 새 저장값 반영'),
     tags$div(style='display:flex;gap:10px;align-items:center;',
       actionButton('board_refresh','저장된 시세로 지금 갱신',class='btn-default')),
@@ -1684,7 +1700,9 @@ ui <- fluidPage(
     tags$h4('텔레그램 일일 자산 보고'),
     tags$p(class='text-muted','전광판과 동일한 보유자산 총평가액 및 평가증감(당일 환율 고정 기준)을 발송합니다. 시세 갱신시각을 확인하세요.'),
     checkboxInput('pms_tg_auto_16','16:00 자동보고 사용 (기본 ON)',value=TRUE),
+    actionButton('pms_tg_send_test','텔레그램 테스트 메시지 보내기',class='btn-default'),
     actionButton('pms_tg_send_manual','텔레그램 수동 전송',class='btn-primary'),
+    tags$div(style='margin-top:7px;',textOutput('pms_tg_missing_quote_status')),
     tags$div(style='margin-top:10px;',textOutput('pms_tg_status')),
     tags$p(class='text-muted','보고서 생성은 현재 저장된 값의 일회성 스냅샷이며, 새 시세·배당 조회나 자동 재생성은 하지 않습니다. HTML 파일은 독립된 웹페이지로 열 수 있습니다.')
   )
@@ -2936,10 +2954,31 @@ server <- function(input, output, session) {
     board_render_stamp(Sys.time())
     panel
   })
+  # 보유수량 0주 종목은 DB의 계좌별 보유수량 합계를 기준으로 전광판 및 전송 검증에서 제외.
+  # NULL/미확인 보유수량은 오류 감지를 위해 유지합니다. 매매이력과 저장 시세는 변경하지 않습니다.
+  pms_board_active_valuation <- function() {
+    z <- pms_board_valuation_changes(board_prices(), con)
+    if (!nrow(z)) return(z)
+    if (!all(c('국가','종목코드') %in% names(z))) return(z)
+    h <- DBI::dbGetQuery(con, paste0(
+      'SELECT UPPER(TRIM(country)) AS country, UPPER(TRIM(symbol)) AS symbol, ',
+      'SUM(CASE WHEN quantity IS NOT NULL THEN quantity ELSE 0 END) AS total_qty, ',
+      'SUM(CASE WHEN quantity IS NULL THEN 1 ELSE 0 END) AS unknown_qty ',
+      'FROM holdings GROUP BY UPPER(TRIM(country)), UPPER(TRIM(symbol))'))
+    key <- paste(toupper(trimws(as.character(z[["국가"]]))),
+                 toupper(trimws(as.character(z[["종목코드"]]))),sep='::')
+    hk <- paste(h$country,h$symbol,sep='::')
+    idx <- match(key,hk)
+    # DB에서 명확히 0주인 종목만 제외 (보유 미확인이나 양수/음수 이상값은 유지)
+    excluded <- !is.na(idx) & is.finite(h$total_qty[idx]) &
+      h$total_qty[idx] == 0 & h$unknown_qty[idx] == 0
+    excluded[is.na(excluded)] <- FALSE
+    z[!excluded, , drop=FALSE]
+  }
   # Summary uses the exact same per-holding valuation rows as the board below.
   # Never treat missing quotes as zero movements; show partial coverage explicitly.
   board_totals <- reactive({
-    z <- pms_board_valuation_changes(board_prices(),con)
+    z <- pms_board_active_valuation()
     get_sum <- function(col) {
       if(!col %in% names(z)) return(list(value=NA_real_,valid=0L,total=nrow(z)))
       v <- suppressWarnings(as.numeric(gsub(',', '', as.character(z[[col]]),fixed=TRUE)))
@@ -2948,36 +2987,137 @@ server <- function(input, output, session) {
     }
     list(nav=get_sum('총평가액(원)'),change=get_sum('평가증감(원)'))
   })
-  # Telegram: 전광판과 동일한 평가 집계값 사용. 값 미수집/일부 종목 누락이면 전송 차단.
+  # Show incomplete calculation details right on the ticker board. The entire
+  # portfolio return is intentionally withheld when any active ticker lacks a
+  # comparable daily change; do not silently treat missing values as zero.
+  output$board_missing_detail <- renderUI({
+    z <- pms_board_active_valuation()
+    if (!nrow(z)) return(NULL)
+    num <- function(col) {
+      if (!col %in% names(z)) return(rep(NA_real_, nrow(z)))
+      suppressWarnings(as.numeric(gsub(',', '', as.character(z[[col]]), fixed=TRUE)))
+    }
+    nv <- num('총평가액(원)')
+    dv <- num('평가증감(원)')
+    missing_nav <- !is.finite(nv)
+    missing_change <- !is.finite(dv)
+    bad <- missing_nav | missing_change
+    if (!any(bad)) return(NULL)
+    codes <- if ('종목코드' %in% names(z)) as.character(z[['종목코드']]) else rep('코드 미확인', nrow(z))
+    qty <- num('보유수량')
+    details <- vapply(which(bad), function(i) {
+      reason <- if (missing_nav[i] && missing_change[i]) '평가액·전일증감 모두 미산출' else
+        if (missing_nav[i]) '평가액 미산출' else '전일증감 미산출'
+      paste0(codes[i], ' (보유수량: ',
+             if (is.finite(qty[i])) format(qty[i], scientific=FALSE, big.mark=',', trim=TRUE) else '미확인',
+             ', ', reason, ')')
+    }, character(1))
+    tags$div(style='padding:7px 11px;margin:5px 0 8px;border:1px solid #e4c588;border-radius:5px;background:#fff9ea;color:#765313;font-size:13px;',
+      tags$strong(sprintf('전광판 산출 누락: %d/%d종목 — ',sum(bad),nrow(z))),
+      paste(details,collapse=' · '),
+      tags$span(style='margin-left:7px;', '누락 원인을 확인할 때까지 전체 등락률은 표시하지 않습니다.'))
+  })
+  # Telegram: 0주 제외 후 전광판과 동일한 집계값 사용. 실제 보유종목 누락 시 전송 차단.
   tg_status <- reactiveVal('대기 중 · 상단 Bot Token / chat_id 입력 필요')
   output$pms_tg_status <- renderText(tg_status())
+  output$pms_tg_missing_quote_status <- renderText({
+    z <- pms_board_active_valuation()
+    if (!nrow(z)) return('평가 대상 종목 없음')
+    get_numeric <- function(col) {
+      if(!col %in% names(z)) return(rep(NA_real_,nrow(z)))
+      suppressWarnings(as.numeric(gsub(',','',as.character(z[[col]]),fixed=TRUE)))
+    }
+    bad <- !is.finite(get_numeric('총평가액(원)')) |
+           !is.finite(get_numeric('평가증감(원)'))
+    if(!any(bad)) return(sprintf('평가 및 전일 대비 집계 정상: %d/%d종목',nrow(z),nrow(z)))
+    paste0('평가/전일 대비 계산 누락: ',sum(bad),'종목 — ',
+      paste(paste(z[['종목코드']][bad],collapse=', ')),
+      ' (해당 종목의 시세·보유수량을 확인하세요)')
+  })
+  observeEvent(input$pms_tg_send_test, {
+    tryCatch({
+      # 연결 확인 전용: NAV/등락률/시세 충족 여부와 무관하게 발송
+      msg <- paste0('✅ PMS2 텔레그램 연결 테스트\n',
+        '발송시각: ',format(Sys.time(),'%Y-%m-%d %H:%M:%S',tz='Asia/Seoul'),
+        ' KST\n', 'PMS2와 텔레그램 봇의 연결이 정상입니다.')
+      pms_tg_send(msg)
+      tg_status(paste('테스트 메시지 발송 성공:',format(Sys.time(),'%Y-%m-%d %H:%M:%S')))
+      showNotification('텔레그램 테스트 메시지 발송 성공',type='message',duration=8)
+    },error=function(e){
+      tg_status(paste('테스트 메시지 발송 실패:',conditionMessage(e)))
+      showNotification(paste('텔레그램 테스트 실패:',conditionMessage(e)),type='error',duration=12)
+    })
+  })
+
   observeEvent(TRUE, {
     updateCheckboxInput(session, 'pms_tg_auto_16', value=pms_tg_setting_get(con))
   }, once=TRUE)
   observeEvent(input$pms_tg_auto_16, {
     pms_tg_setting_put(con, isTRUE(input$pms_tg_auto_16))
   }, ignoreInit=TRUE)
-  tg_message <- function() {
+  # 수동 보고는 누락된 값을 0으로 가정하지 않고 부분 집계로 발송한다.
+  # 16시 자동 보고는 기존과 동일하게 NAV/등락 모두 100% 계산돼야 발송한다.
+  tg_message <- function(allow_partial_change=FALSE) {
     z <- isolate(board_totals())
     nav <- z$nav; delta <- z$change
-    if (!is.finite(nav$value) || !is.finite(delta$value) || nav$valid<1L ||
-        nav$valid<nav$total || delta$valid<1L || delta$valid<delta$total)
-      stop('시세 미수집 또는 평가 누락 종목이 있어 전송하지 않습니다. 시세를 확인하세요.')
-    value <- nav$value; change <- delta$value
-    pct <- if (is.finite(value-change) && abs(value-change)>1) 100*change/(value-change) else NA_real_
-    sgn <- if (change>0) '▲' else if (change<0) '▼' else '－'
-    paste0('📊 PMS2 일일 자산 보고\n',
-           '기준시각: ', format(Sys.time(), '%Y-%m-%d %H:%M', tz='Asia/Seoul'), ' KST\n',
-           '총평가액: ', format(round(value),big.mark=',',scientific=FALSE,trim=TRUE), '원\n',
-           '전일 종가 대비 평가증감: ',sgn,' ',
-           format(round(abs(change)),big.mark=',',scientific=FALSE,trim=TRUE),'원',
-           if (is.finite(pct)) sprintf(' (%+.2f%%)',pct) else '', '\n',
-           '※ 전광판 기준. 보유수량/현재 적용환율 고정, 환율변동·입출금 효과 제외.\n',
-           '※ 16시 기준 해외주식은 전일 또는 최근 저장 시세일 수 있습니다.')
+    complete_nav <- is.finite(nav$value) && nav$total > 0L && nav$valid == nav$total
+    complete_change <- is.finite(delta$value) && delta$total > 0L &&
+      delta$valid == delta$total && delta$total == nav$total
+    if (!isTRUE(allow_partial_change) && !complete_nav)
+      stop(sprintf('총평가액 미산출: %d/%d종목. 자동 보고를 중단합니다.',nav$valid,nav$total))
+    if (!isTRUE(allow_partial_change) && !complete_change)
+      stop(sprintf('전일 대비 평가증감 미산출: %d/%d종목. 자동 보고를 중단합니다.',delta$valid,delta$total))
+    if (nav$total < 1L) stop('현재 보유종목이 없어 보고하지 않습니다.')
+    fmt <- function(v) format(round(v),big.mark=',',scientific=FALSE,trim=TRUE)
+    head <- paste0('📊 PMS2 일일 자산 보고\n',
+      '기준시각: ',format(Sys.time(),'%Y-%m-%d %H:%M',tz='Asia/Seoul'),' KST\n')
+    if (complete_nav) {
+      head <- paste0(head,'총평가액: ',fmt(nav$value),'원 (',nav$valid,'/',nav$total,'종목)\n')
+    } else {
+      head <- paste0(head,'⚠️ 평가액 부분 합계: ',
+        if(is.finite(nav$value)) paste0(fmt(nav$value),'원') else '산출 불가',
+        ' (',nav$valid,'/',nav$total,'종목)\n',
+        '전체 총평가액: 산출 불가 (누락 종목의 평가액 미포함)\n')
+    }
+    if (complete_change && complete_nav) {
+      change <- delta$value
+      pct <- if (is.finite(nav$value-change) && (nav$value-change)>0)
+        100*change/(nav$value-change) else NA_real_
+      sgn <- if(change>0) '▲' else if(change<0) '▼' else '－'
+      details <- paste0('전일 종가 대비 평가증감: ',sgn,' ',fmt(abs(change)),'원',
+                       if(is.finite(pct)) sprintf(' (%+.2f%%)',pct) else '', '\n')
+    } else {
+      details <- paste0('⚠️ 전일 대비 부분 집계: ',
+        if(is.finite(delta$value)) paste0(if(delta$value>0) '+' else '',fmt(delta$value),'원') else '산출 불가',
+        ' (',delta$valid,'/',delta$total,'종목)\n',
+        '전체 포트폴리오 등락률: 산출 불가\n')
+    }
+    if (!complete_nav || !complete_change) {
+      rows <- isolate(pms_board_active_valuation())
+      get_num <- function(col) {
+        if(!col %in% names(rows)) return(rep(NA_real_,nrow(rows)))
+        suppressWarnings(as.numeric(gsub(',','',as.character(rows[[col]]),fixed=TRUE)))
+      }
+      if(nrow(rows) && '종목코드' %in% names(rows)) {
+        nv <- get_num('총평가액(원)')
+        cv <- get_num('평가증감(원)')
+        bad <- !is.finite(nv) | !is.finite(cv)
+        if(any(bad)) {
+          reasons <- ifelse(!is.finite(nv[bad]) & !is.finite(cv[bad]),'평가액·증감 누락',
+                      ifelse(!is.finite(nv[bad]),'평가액 누락','증감 누락'))
+          details <- paste0(details,'미산출 종목: ',
+            paste0(as.character(rows[['종목코드']][bad]),'(',reasons,')',collapse=', '),'\n')
+        }
+      }
+      details <- paste0(details,'※ 부분 집계는 전체 자산/일일 손익이 아닙니다.\n')
+    }
+    paste0(head,details,
+      '※ 전광판 기준. 보유수량/현재 적용환율 고정, 환율변동·입출금 효과 제외.\n',
+      '※ 16시 기준 해외주식은 전일 또는 최근 저장 시세일 수 있습니다.')
   }
   observeEvent(input$pms_tg_send_manual, {
     tryCatch({
-      pms_tg_send(tg_message())
+      pms_tg_send(tg_message(allow_partial_change=TRUE))
       tg_status(paste('수동 전송 성공:',format(Sys.time(),'%Y-%m-%d %H:%M:%S')))
       showNotification('텔레그램 수동 전송 성공',type='message')
     },error=function(e){
@@ -3079,6 +3219,25 @@ server <- function(input, output, session) {
         100 * delta / prev_value else NA_real_
       pct_label <- if(is.finite(daily_pct))
         sprintf(' (%+.2f%%)',daily_pct) else ' (등락률 산출 불가)'
+      # Show failed security directly in the headline; separate renderUI diagnostic can be hidden by layout/CSS.
+      if (!is.finite(daily_pct)) {
+        zz <- pms_board_active_valuation()
+        if (nrow(zz)) {
+          readnum <- function(nm) {
+            if (!nm %in% names(zz)) return(rep(NA_real_, nrow(zz)))
+            suppressWarnings(as.numeric(gsub(',', '', as.character(zz[[nm]]), fixed=TRUE)))
+          }
+          bad_rows <- which(!is.finite(readnum('총평가액(원)')) |
+                            !is.finite(readnum('평가증감(원)')))
+          if (length(bad_rows)) {
+            codes <- if ('종목코드' %in% names(zz)) as.character(zz[['종목코드']][bad_rows]) else rep('종목코드 없음',length(bad_rows))
+            qty <- readnum('보유수량')[bad_rows]
+            desc <- paste0(codes, '[', ifelse(is.finite(qty),format(qty,trim=TRUE,scientific=FALSE),'?'),'주]')
+            pct_label <- paste0(pct_label,' · 미산출: ',paste(head(desc,5L),collapse=', '),
+              if(length(desc)>5L) sprintf(' 외 %d종목',length(desc)-5L) else '')
+          }
+        }
+      }
       delta_cls <- if(!is.finite(delta)) 'pms-move-flat' else if(delta > 0) 'pms-move-up' else if(delta < 0) 'pms-move-down' else 'pms-move-flat'
       tags$span(style='display:inline-flex;flex-wrap:wrap;align-items:center;gap:12px;',
         tags$span(tags$b('총평가액 '),val(x$nav)),
@@ -3138,7 +3297,7 @@ server <- function(input, output, session) {
     z[,append(cols,c(new_col,return_col),after=at),drop=FALSE]
   }
   output$board_value_change_table <- DT::renderDT({
-    z <- pms_board_purchase_profit(pms_board_valuation_changes(board_prices(),con))
+    z <- pms_board_purchase_profit(pms_board_active_valuation())
     # Determine monetary and fractional columns from their names, never fixed
     # numeric positions: the purchase-profit column is inserted mid-table.
     formatted_cols <- intersect(c('보유수량','전일종가','현재가','등락률(%)',
